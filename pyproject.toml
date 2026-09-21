@@ -1,0 +1,38 @@
+[project]
+name = "song-recommender"
+version = "0.1.0"
+description = "Content-based music recommendation: natural-language mood search and similar-song retrieval over CLAP audio embeddings."
+readme = "README.md"
+# Pinned below 3.13 because torch/transformers wheel coverage is the binding
+# constraint; the host default (3.14) has no torch wheels.
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    "numpy>=1.26",
+    "torch>=2.2",
+    "transformers>=4.40",
+    # soundfile bundles libsndfile (wav/flac/ogg/mp3), so no ffmpeg is needed.
+    "soundfile>=0.12",
+    # soxr is the resampler librosa itself delegates to, without the numba
+    # toolchain librosa drags in.
+    "soxr>=0.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.uv]
+# Plain dependency environment: modules are imported from the repo root rather
+# than installed, so there is no build backend to configure.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "real_model: exercises the real CLAP checkpoint; downloads ~700MB of weights on first run",
+]
+# Real-model tests are excluded by default so the suite needs no model weights.
+# Run them with: uv run pytest -m real_model
+addopts = "-m 'not real_model'"
