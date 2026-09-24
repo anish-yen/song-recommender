@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "EXAMPLE ONLY — copy to manifest.json and point audio_path at real files.",
+    "Required per track: track_id, title, artist, audio_path.",
+    "Optional: source, license, provider_url. Unknown keys are rejected, but",
+    "keys starting with _ are treated as comments and ignored.",
+    "Relative audio_path values resolve against this file's folder.",
+    "Anything libsndfile decodes works (wav, flac, ogg, mp3); no ffmpeg needed.",
+    "Tracks under 30 seconds yield fewer than three excerpts.",
+    "Audio itself is git-ignored (data/audio/) — share the files out of band."
+  ],
+  "tracks": [
+    {
+      "track_id": "example-0001",
+      "title": "Example Track One",
+      "artist": "Example Artist",
+      "audio_path": "audio/example-0001.wav",
+      "source": "self-recorded / dataset name / where this came from",
+      "license": "CC0 / CC-BY / cleared for internal demo",
+      "provider_url": "https://example.test/tracks/0001"
+    },
+    {
+      "track_id": "example-0002",
+      "title": "Example Track Two",
+      "artist": "Another Artist",
+      "audio_path": "audio/example-0002.mp3",
+      "source": "dataset name",
+      "license": "CC-BY 4.0"
+    }
+  ]
+}

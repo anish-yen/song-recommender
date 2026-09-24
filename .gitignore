@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Audio catalogs are large and license-encumbered: never commit them.
+data/audio/
+data/manifest.json
+data/evaluation/
+tests/fixtures/audio/
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.m4a
+
+# Model checkpoints and Hugging Face caches
+models/
+*.bin
+*.safetensors
+*.pt
+*.ckpt
+
+# Generated embedding indexes
+.index/
+index/
+*.npy
+*.npz
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
