@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum FeedbackAction {
+  SAVE
+  REJECT
+  OPEN
+  SKIP
+}
+
+model User {
+  id             String          @id @default(cuid())
+  name           String
+  email          String          @unique
+  passwordHash   String
+  playlists      Playlist[]
+  feedbackEvents FeedbackEvent[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model Track {
+  id              String          @id @default(cuid())
+  title           String
+  artist          String
+  album           String?
+  coverArtUrl     String?
+  durationSeconds Int?
+  previewUrl      String?
+  providerId      String?
+  providerUrl     String?
+  source          String?
+  license         String?
+  playlistTracks  PlaylistTrack[]
+  feedbackEvents  FeedbackEvent[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@unique([providerId, providerUrl])
+  @@index([title, artist])
+}
+
+model Playlist {
+  id        String          @id @default(cuid())
+  ownerId   String
+  title     String
+  owner     User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  tracks    PlaylistTrack[]
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@index([ownerId, updatedAt])
+}
+
+model PlaylistTrack {
+  playlistId String
+  trackId    String
+  position   Int
+  addedAt    DateTime @default(now())
+  playlist   Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  track      Track    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@id([playlistId, trackId])
+  @@unique([playlistId, position])
+  @@index([trackId])
+}
+
+model FeedbackEvent {
+  id        String         @id @default(cuid())
+  userId    String
+  trackId   String
+  queryId   String?
+  action    FeedbackAction
+  createdAt DateTime       @default(now())
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  track     Track          @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([trackId, action])
+}

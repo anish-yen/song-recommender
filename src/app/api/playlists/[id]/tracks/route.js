@@ -1,0 +1,11 @@
+import { NextResponse } from 'next/server';
+import { currentUserId } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
+import { assertOwner } from '@/lib/playlist-access';
+import { trackIdentity } from '@/lib/tracks';
+
+async function getOwned(id) { const userId = await currentUserId(); if (!userId) return [null, NextResponse.json({ error: 'Sign in required.' }, { status: 401 })]; const playlist = await prisma.playlist.findUnique({ where: { id }, include: { tracks: { orderBy: { position: 'asc' } } } }); try { return [assertOwner(playlist, userId)]; } catch { return [null, NextResponse.json({ error: 'Playlist not found.' }, { status: 404 })]; } }
+export async function POST(request, { params }) {
+  try { const { id } = await params; const [playlist, error] = await getOwned(id); if (error) return error; const data = trackIdentity((await request.json()).track || {}); if (!data.title || !data.artist) return NextResponse.json({ error: 'Track details are incomplete.' }, { status: 400 }); const track = data.providerId && data.providerUrl ? await prisma.track.upsert({ where: { providerId_providerUrl: { providerId: data.providerId, providerUrl: data.providerUrl } }, create: data, update: data }) : await prisma.track.create({ data }); const exists = playlist.tracks.some((item) => item.trackId === track.id); if (!exists) await prisma.playlistTrack.create({ data: { playlistId: playlist.id, trackId: track.id, position: playlist.tracks.length } }); return NextResponse.json({ ok: true }); } catch { return NextResponse.json({ error: 'Unable to add this song.' }, { status: 500 }); }
+}
+export async function DELETE(request, { params }) { const { id } = await params; const [playlist, error] = await getOwned(id); if (error) return error; const trackId = new URL(request.url).searchParams.get('trackId'); if (!trackId || !playlist.tracks.some((item) => item.trackId === trackId)) return NextResponse.json({ error: 'Track not found.' }, { status: 404 }); await prisma.$transaction([prisma.playlistTrack.delete({ where: { playlistId_trackId: { playlistId: playlist.id, trackId } } }), prisma.playlistTrack.updateMany({ where: { playlistId: playlist.id, position: { gt: playlist.tracks.find((item) => item.trackId === trackId).position } }, data: { position: { decrement: 1 } } })]); return NextResponse.json({ ok: true }); }
