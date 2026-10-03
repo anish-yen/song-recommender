@@ -1,4 +1,5 @@
 'use client';
+import './discovery.css';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Nav from '@/components/Nav';
