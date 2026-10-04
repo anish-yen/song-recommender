@@ -84,6 +84,16 @@ The tracked tree contains ten team-member-name matches across six files: `README
 
 **Acceptance:** inspect all tracked text and docstrings for remaining personal references; ensure the instruction file is included in the eventual feature-branch commit. Keep audio, weights, generated indexes, secrets, and caches out of staging.
 
+### R7 — P0: the music checkpoint produced no usable text/audio alignment
+
+Found on 2026-10-04 during attribute estimation, after this review. Location: [config.py](recommendation_engine/config.py), `MODEL_ID` / `MODEL_REVISION`.
+
+Through transformers, `laion/larger_clap_music@a0b4534` embedded unrelated text prompts at cosine 0.999 and stored `exp(logit_scale_a) ≈ 1.03`. On the 11-track evaluation catalog every mood query returned the same top tracks, and every zero-shot vocals probability was 0.500. All 555 weights load and match the checkpoint file; transformers 4.57 and 5.17 behave identically, and an open [model discussion](https://huggingface.co/laion/larger_clap_music/discussions/2) reports the same ~0.5 scores. The real-model tests passed because they checked shape, normalisation, and repeatability only; the cross-modal test was skipped for lack of fixtures.
+
+**Change made (pending architecture sign-off):** switched to `laion/larger_clap_general@ada0c23`, which has identical preprocessing settings. On the same catalog it ranked the expected track first for 7 of 8 genre queries, and its temperature is ~38.7. Added a real-model test that fails when unrelated prompts collapse, and the cross-modal test now accepts any decodable fixture format.
+
+**Still open:** this is an 11-track check, not the planned evaluation. Whether a music-specific checkpoint (for example LAION's original `laion_clap` package) beats the general one remains a later experiment.
+
 ## Architectural assessment
 
 The separation between manifest parsing, deterministic waveform processing, CLAP inference, vector mathematics, ranking, and persistence is appropriate for this milestone. Both recommendation paths share the same projected 512-dimensional space. Seed retrieval uses stored audio vectors without loading a model, while mood search requires one text encoding. Lazy loading keeps retrieval modules independent of torch imports.

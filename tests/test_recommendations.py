@@ -173,6 +173,11 @@ class TestSimilarTo:
         assert [r.track_id for r in results] == ["copy"]
         assert results[0].similarity == pytest.approx(1.0, abs=1e-6)
 
+    def test_exclude_removes_neighbours_before_the_k_cut(self, catalog):
+        # Seeded from a: c (0.707) > b (0.0) > d (-1.0); excluding c promotes b.
+        results = similar_to(catalog, "a", k=1, exclude=frozenset({"c"}))
+        assert [r.track_id for r in results] == ["b"]
+
     def test_unknown_seed_is_an_error_not_an_empty_list(self, catalog):
         with pytest.raises(UnknownTrackError, match="not in the catalog"):
             similar_to(catalog, "does-not-exist", k=3)

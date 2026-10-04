@@ -28,16 +28,23 @@ The seed track is always excluded from its own results.
 {
   "results": [
     { "track_id": "abc123", "title": "Song", "artist": "Artist",
-      "similarity": 0.4213, "provider_url": "https://..." }
+      "similarity": 0.4213, "provider_url": "https://...",
+      "reason": "Matches \"relaxing\" (calm) in your search (model estimate) · closest sound match to \"relaxing piano\"",
+      "evidence": { "match": { "kind": "query", "rank": 1, "of": 11, "similarity": 0.4213 } } }
   ],
-  "embedding_space": "laion/larger_clap_music@a0b4534 [9e8523452dca]"
+  "embedding_space": "laion/larger_clap_general@ada0c23 [71ffea9c87d4]"
 }
 ```
 
 `similarity` is a cosine similarity in `[-1, 1]`: **a ranking score, not a probability or a
 percentage match**, and not calibrated for comparison between the two endpoints. The frontend
 should order by it, not display it as a score out of
-100. `evidence` is omitted whenever nothing supports it — never invent mood or energy labels.
+100. `evidence` follows the rules in the engine README's
+[Filters and reasons](../recommendation_engine/README.md#filters-and-reasons): `match` is always
+present, a filter becomes a reason only if the user applied it, agreement with the query or
+seed is worded as agreement, and estimates are marked as estimates while measurements (tempo,
+energy) are stated as facts. `reason` is `short_reason(evidence)`: the one line the results page
+shows. Never invent mood or energy labels.
 
 Returning fewer than `k` results is normal and not an error.
 
@@ -65,8 +72,10 @@ parameters, so per-request loading would dominate latency entirely.
 
 ## Open questions for the team
 
-- **Filters** — which ones does the frontend need in P0 (none is a valid answer), and what should
-  happen when the metadata a filter needs is unknown?
+- **Filters** — the engine supports `vocals`, `genre`, `mood`, `energy`, and a tempo range
+  (`AttributeFilters`)
+  and hides tracks whose estimate is unknown, reporting the count. Which should the frontend
+  expose in P0, and should the response carry `hidden_by_filters`?
 - **Pagination** — offset, or top-`k` only?
 - **Catalog size and latency target** — the working acceptance target is "10 useful results within
   two seconds", to be *measured* on stated hardware rather than assumed.

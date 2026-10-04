@@ -15,13 +15,15 @@ import dataclasses
 import hashlib
 import json
 
-#: Checkpoint trained on music (as opposed to the general-audio CLAP variants).
-#: Apache-2.0, unlike the noncommercial MERT/MuQ weights.
-MODEL_ID = "laion/larger_clap_music"
+#: LAION's general checkpoint (music, speech, and general audio). Apache-2.0,
+#: unlike the noncommercial MERT/MuQ weights. ``laion/larger_clap_music`` was the
+#: first choice but is unusable through transformers: unrelated text prompts embed
+#: at cosine 0.999, so every mood query returned the same ranking (see REVIEW.md R7).
+MODEL_ID = "laion/larger_clap_general"
 
-#: Resolved from the Hugging Face API on 2026-09-21. Pinning the revision means
+#: Resolved from the Hugging Face API on 2026-10-04. Pinning the revision means
 #: an upstream re-upload cannot silently change everyone's vectors.
-MODEL_REVISION = "a0b4534a14f58e20944452dff00a22a06ce629d1"
+MODEL_REVISION = "ada0c23a36c4e8582805bb38fec3905903f18b41"
 
 #: ``projection_dim`` in the checkpoint's config.json.
 EMBEDDING_DIM = 512

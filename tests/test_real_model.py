@@ -1,7 +1,7 @@
-"""Opt-in checks against the real CLAP checkpoint.
+"""Opt-in checks against the real CLAP and AST checkpoints.
 
 Excluded from the default suite (see ``addopts`` in pyproject.toml) because they
-download ~700MB of weights. Run them with:
+download ~1.1GB of weights. Run them with:
 
     uv run pytest -m real_model
 
@@ -10,8 +10,8 @@ space, normalisation, and above all reproducibility. They say nothing about whet
 recommendations are any good — that needs real music and human listening, which is
 the evaluation step, not a unit test.
 
-Cross-modal relevance is checked only when real audio is present in
-``tests/fixtures/audio/`` (git-ignored); synthetic tones cannot stand in for music.
+Cross-modal relevance and AST tagging are checked only when real audio is present
+in ``tests/fixtures/audio/`` (git-ignored); synthetic tones cannot stand in for music.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def tone_file(tmp_path_factory):
 
 class TestCheckpointContract:
     def test_resolves_the_pinned_revision(self, encoder):
-        assert encoder.space.model_id == "laion/larger_clap_music"
+        assert encoder.space.model_id == DEFAULT_SPACE.model_id
         assert encoder.space.model_revision == DEFAULT_SPACE.model_revision
         assert len(encoder.space.model_revision) == 40
 
@@ -66,6 +66,14 @@ class TestCheckpointContract:
         assert embedding.vector.shape == (DEFAULT_SPACE.dim,)
         assert embedding.excerpt_count == DEFAULT_SPACE.max_excerpts
         assert np.linalg.norm(embedding.vector) == pytest.approx(1.0, abs=1e-5)
+
+    def test_unrelated_text_prompts_do_not_collapse(self, encoder):
+        """``laion/larger_clap_music`` fails this at cosine 0.999: every mood query
+        then ranks the catalog identically, while every shape check still passes."""
+        calm, metal = encoder.embed_text(
+            ["calm solo piano", "aggressive heavy metal with screaming"]
+        )
+        assert float(calm @ metal) < 0.9
 
     def test_projection_is_not_the_raw_hidden_state(self, encoder):
         """768 would mean we grabbed last_hidden_state instead of the shared space."""
@@ -113,18 +121,57 @@ class TestCrossModalRelevance:
     """Needs real music; skipped unless fixtures are supplied.
 
     Drop a few permitted audio files into ``tests/fixtures/audio/`` named after what
-    they are, e.g. ``calm-piano.wav`` and ``aggressive-drums.wav``.
+    they are, e.g. ``calm-piano.mp3`` and ``aggressive-drums.wav``; any format
+    libsndfile decodes works.
     """
 
+    @staticmethod
+    def _fixture(stem: str) -> Path | None:
+        return next(iter(sorted(FIXTURE_AUDIO.glob(f"{stem}.*"))), None)
+
     def test_text_query_ranks_matching_audio_higher(self, encoder):
-        calm = FIXTURE_AUDIO / "calm-piano.wav"
-        loud = FIXTURE_AUDIO / "aggressive-drums.wav"
-        if not (calm.is_file() and loud.is_file()):
+        calm = self._fixture("calm-piano")
+        loud = self._fixture("aggressive-drums")
+        if calm is None or loud is None:
             pytest.skip(
-                f"place calm-piano.wav and aggressive-drums.wav in {FIXTURE_AUDIO} "
+                f"place calm-piano.* and aggressive-drums.* in {FIXTURE_AUDIO} "
                 "to run the cross-modal check"
             )
         query = encoder.embed_text(["gentle solo piano, calm and quiet"])[0]
         calm_score = float(query @ encoder.embed_audio_file(calm).vector)
         loud_score = float(query @ encoder.embed_audio_file(loud).vector)
         assert calm_score > loud_score
+
+
+class TestAudioTagger:
+    """AST vocals on real music, at the thresholds chosen from the starter catalog.
+
+    Needs ``calm-piano.*`` (solo piano) and ``vocal-song.*`` (unaccompanied singing)
+    in ``tests/fixtures/audio/``.
+    """
+
+    def test_vocal_presence_separates_singing_from_solo_piano(self):
+        from recommendation_engine.attributes import (
+            AST_SAMPLE_RATE,
+            AudioTagger,
+            mood_from_scores,
+            vocals_from_scores,
+        )
+        from recommendation_engine.audio import load_mono_audio
+
+        piano = TestCrossModalRelevance._fixture("calm-piano")
+        voice = TestCrossModalRelevance._fixture("vocal-song")
+        if piano is None or voice is None:
+            pytest.skip(f"place calm-piano.* and vocal-song.* in {FIXTURE_AUDIO}")
+        tagger = AudioTagger()
+        scores = {
+            name: tagger.class_scores(load_mono_audio(path, AST_SAMPLE_RATE))
+            for name, path in (("piano", piano), ("voice", voice))
+        }
+        labels = {name: vocals_from_scores(s)["label"] for name, s in scores.items()}
+        assert labels == {"piano": "instrumental", "voice": "vocal"}
+        # Mood is the weakest attribute; only require the slow piano to read as
+        # calm or sad, never as energetic or angry.
+        piano_moods = set(mood_from_scores(scores["piano"])["labels"])
+        assert piano_moods & {"calm", "sad"}
+        assert not piano_moods & {"energetic", "angry"}

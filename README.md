@@ -10,7 +10,9 @@ A basic working recommender, nothing more:
 1. **Mood search** — natural-language queries like "late-night beats without heavy vocals".
 2. **Similar songs** — given a seed track, find tracks that sound like it.
 
-Explanations, personalisation, and better models are P1 and later.
+The design doc's P0 list also includes simple filters (energy, tempo, vocals, mood, genre) and
+a short evidence-based reason for each result; the engine implements both. Personalisation and
+better models are P1 and later.
 
 ## Features
 
@@ -19,8 +21,11 @@ choices behind it.
 
 | Feature | README | Responsibility | Status |
 | --- | --- | --- | --- |
-| **Recommendation engine** — CLAP embeddings, mood search, similar-song retrieval, ranking | [recommendation_engine/README.md](recommendation_engine/README.md) | Recommendation core | Local pipeline verified; review fixes and music evaluation pending |
+| **Recommendation engine** — CLAP embeddings, mood search, similar-song retrieval, ranking, attribute filters, evidence-based reasons | [recommendation_engine/README.md](recommendation_engine/README.md) | Recommendation core | Local pipeline verified; review fixes and music evaluation pending |
 | **API** — `POST /search`, `GET /similar/{track_id}` | [api/README.md](api/README.md) | API and database integration | Not implemented (design documented) |
+
+Superseded approaches live in [`archive/`](archive/clap_zero_shot/README.md) with a note on why
+they were replaced.
 
 Other P0 slices — catalog/ingestion, frontend, integration and delivery — are **proposed, not
 confirmed**, and get their own folders and READMEs as they start.
@@ -41,9 +46,11 @@ the catalog is shared out of band, never committed.
 
 ## Current status
 
-The recommendation engine's pipeline works end to end and is verified against the real
-`laion/larger_clap_music` checkpoint. **Recommendation quality is not yet measured** — that
-needs a real catalog and human listening. See the engine README's
+The recommendation engine's pipeline works end to end against the real
+`laion/larger_clap_general` checkpoint (the music checkpoint was dropped; see
+[REVIEW.md](REVIEW.md) R7). Filters and one-line reasons use AST tags (vocals, genre, mood) and
+measured tempo and energy, checked so far on an 11-track starter catalog. **Recommendation
+quality is not yet measured** — that needs a larger catalog and human listening. See the engine README's
 [Limitations](recommendation_engine/README.md#limitations) before demoing anything.
 
 To add real music and evaluate both recommendation paths, follow the

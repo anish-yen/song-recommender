@@ -17,7 +17,8 @@ NumPy, soundfile, soxr, pytest.
 
 Values verified against the live checkpoint on 2026-09-21, not recalled:
 
-- Checkpoint: `laion/larger_clap_music`, revision `a0b4534a14f58e20944452dff00a22a06ce629d1`, Apache-2.0.
+- Checkpoint: `laion/larger_clap_general`, revision `ada0c23a36c4e8582805bb38fec3905903f18b41`, Apache-2.0
+  (replaced `laion/larger_clap_music` on 2026-10-04: its text embeddings collapse; see REVIEW.md R7).
 - Projected embedding dimension: **512** (`projection_dim` in `config.json`).
 - Audio sample rate: **48000 Hz**; excerpt window **480000 samples** (`nb_max_samples`, 10 s).
 - The processor's default `truncation` is `rand_trunc` — **random**. We therefore slice exact

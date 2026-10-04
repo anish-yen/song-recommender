@@ -13,9 +13,10 @@ dependencies = [
     "transformers>=4.40",
     # soundfile bundles libsndfile (wav/flac/ogg/mp3), so no ffmpeg is needed.
     "soundfile>=0.12",
-    # soxr is the resampler librosa itself delegates to, without the numba
-    # toolchain librosa drags in.
+    # soxr resamples for embedding; librosa only measures tempo and onsets
+    # (attributes.py), and is imported lazily there.
     "soxr>=0.4",
+    "librosa>=1.0",
 ]
 
 [dependency-groups]
@@ -31,7 +32,7 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "real_model: exercises the real CLAP checkpoint; downloads ~700MB of weights on first run",
+    "real_model: exercises the real CLAP and AST checkpoints; downloads ~1.1GB of weights on first run",
 ]
 # Real-model tests are excluded by default so the suite needs no model weights.
 # Run them with: uv run pytest -m real_model

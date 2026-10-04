@@ -92,20 +92,21 @@ Rules that keep this honest:
 | Most queries return mostly-good top-5 | CLAP is the right P0 choice. Move on to the API and database. |
 | Mood search poor, similar-songs good | The text side is the weak link. Try rephrasing queries before changing models; consider MuQ-MuLan as a later challenger. |
 | Both poor | Check the catalog first (too few tracks? too similar? decoding correctly?) before blaming the model. |
-| `without heavy vocals` ignored | **Expected.** Nothing enforces exclusions yet; see the README's Limitations. |
+| `without heavy vocals` ignored | **Expected.** Free-text exclusions are not enforced; use `--vocals instrumental`. See the README's Limitations. |
 
 Record the outcome and the date in this file or a linked note, so the model decision is
 backed by evidence rather than recollection.
 
 ## Optional: un-skip the automated relevance check
 
-One test verifies that a text query ranks matching audio above mismatched audio, but it
-skips until fixtures exist:
+Two real-music tests skip until fixtures exist: one checks that a text query ranks matching
+audio above mismatched audio, the other that AST tags singing as vocal and solo piano as
+instrumental and calm or sad:
 
 ```bash
 mkdir -p tests/fixtures/audio
-# add calm-piano.wav and aggressive-drums.wav (git-ignored)
+# add calm-piano.*, aggressive-drums.*, and vocal-song.* (any decodable format; git-ignored)
 uv run pytest -m real_model
 ```
 
-This is a smoke test for cross-modal sanity, not a substitute for listening.
+These are smoke tests, not a substitute for listening.

@@ -29,8 +29,9 @@ class Recommendation:
     artist: str
     similarity: float
     provider_url: str | None = None
-    #: Only ever populated from verified metadata or a validated classifier.
-    #: Never from raw embedding dimensions, and never from an LLM.
+    #: Filled by ``evidence.py``: the measured match, filters that actually kept the
+    #: track, and model estimates marked with their ``kind``. Never from raw
+    #: embedding dimensions, and never from an LLM.
     evidence: dict[str, object] = dataclasses.field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
@@ -221,12 +222,15 @@ def similar_to(
     track_id: str,
     *,
     k: int = 10,
+    exclude: frozenset[str] = frozenset(),
     max_per_artist: int | None = None,
 ) -> list[Recommendation]:
     """Nearest neighbours of a catalog track, excluding the seed itself.
 
     Raises ``UnknownTrackError`` for an unindexed seed rather than returning an
     empty list, so the caller can tell "no such track" from "nothing similar".
+    ``exclude`` removes further tracks (e.g. ones a filter rejected) before the
+    ``k`` cut, so filtering never shortens a list that had enough candidates.
     """
     k = _validate_k(k)
     seed_vector = catalog.vector_of(track_id)
@@ -235,6 +239,6 @@ def similar_to(
         catalog,
         scores,
         k=k,
-        exclude=frozenset({track_id}),
+        exclude=frozenset(exclude) | {track_id},
         max_per_artist=max_per_artist,
     )

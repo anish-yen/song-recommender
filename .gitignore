@@ -8,6 +8,7 @@ __pycache__/
 # Audio catalogs are large and license-encumbered: never commit them.
 data/audio/
 data/manifest.json
+data/labels.json
 data/evaluation/
 tests/fixtures/audio/
 *.mp3

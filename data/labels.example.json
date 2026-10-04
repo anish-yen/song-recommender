@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "EXAMPLE ONLY - copy to labels.json and fill in what you HEAR, before reading attributes.json.",
+    "One entry per track_id in the index. null or a missing key means 'not labelled'.",
+    "vocals: vocal | instrumental. genre: one of GENRE_CLASSES in attributes.py.",
+    "mood: a list from MOOD_CLASSES in attributes.py. energy: low | medium | high,",
+    "relative to the rest of this catalog (thirds), not an absolute loudness.",
+    "Check with: python -m recommendation_engine.agreement --labels data/labels.json"
+  ],
+  "tracks": {
+    "example-0001": {
+      "vocals": "instrumental",
+      "genre": "classical",
+      "mood": [
+        "calm"
+      ],
+      "energy": "low"
+    },
+    "example-0002": {
+      "vocals": "vocal",
+      "genre": null,
+      "mood": [],
+      "energy": "high"
+    }
+  }
+}
