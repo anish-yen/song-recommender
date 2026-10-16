@@ -11,3 +11,61 @@
   background-size: 0.25rem 0.25rem, 0.25rem 0.25rem;
   background-repeat: no-repeat;
 }
+
+.seed-picker {
+  position: relative;
+}
+
+.seed-suggestions {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  right: 0;
+  margin: 0.3rem 0 0;
+  padding: 0.3rem 0;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.seed-suggestions button {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: var(--paper);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.82rem;
+}
+
+.seed-suggestions button:hover,
+.seed-suggestions button:focus-visible {
+  background: #20291c;
+  color: var(--lime);
+}
+
+.seed-suggestions span {
+  color: var(--muted);
+}
+
+.filter-row input[type='number'] {
+  min-width: 90px;
+  max-width: 110px;
+}
+
+.filter-clear {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.filter-note {
+  font: 0.68rem 'DM Mono', monospace;
+  color: var(--muted);
+}
+
+.track-main .track-license {
+  margin-top: 0.3rem;
+  font: 0.62rem 'DM Mono', monospace;
+  color: #6d746d;
+}

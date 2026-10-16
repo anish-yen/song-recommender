@@ -7,5 +7,5 @@ export async function POST(request) {
     const query = String(body.query || '').trim(); const seed = body.seed && typeof body.seed === 'object' ? body.seed : null;
     if (!query && !seed?.title) return NextResponse.json({ error: 'Describe what you want or select a seed song.' }, { status: 400 });
     return NextResponse.json(await getRecommendations({ query: query.slice(0, 400), seed, filters: body.filters || {} }));
-  } catch (error) { return NextResponse.json({ error: error.message || 'Recommendations are unavailable.' }, { status: 503 }); }
+  } catch (error) { return NextResponse.json({ error: error.message || 'Recommendations are unavailable.' }, { status: error.status && error.status < 500 ? error.status : 503 }); }
 }
