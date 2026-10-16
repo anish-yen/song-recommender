@@ -73,8 +73,11 @@ Verified on a 40-track FMA sample: specific queries ("hip hop with rap vocals", 
 guitar") return the expected genres, a seed's top 5 share its FMA genre 38% of the time
 (chance: ~10%), and a query takes ~15 ms after startup. **Recommendation quality is not yet
 graded by listeners** — follow the [evaluation guide](recommendation_engine/EVALUATION.md)
-before claiming it. Known weaknesses: one "hub" track surfaces for many unrelated queries
-(no diversity rerank yet), and words like "without" are not enforced (use the vocals filter).
+before claiming it. Known weaknesses: on 40 tracks a few "hub" tracks topped unrelated queries
+(gone at 800 tracks: 16 genre queries, 16 different #1s); words like "without" are not enforced
+(use the vocals filter); and activity words like "gym" or "study" barely affect results because
+CLAP understands sounds, not activities — use the Energy filter until the
+[P1 activity auto-filter](recommendation_engine/PLAN.md#p1-activity-auto-filter) lands.
 [REVIEW.md](REVIEW.md) tracks architectural findings; R3 and R5 remain open.
 
 ## Working agreements

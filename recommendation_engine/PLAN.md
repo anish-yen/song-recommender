@@ -125,6 +125,67 @@ attributes, filters, reasons) and `frontend`. Measured on a 40-track FMA sample 
 | 10 results in under 2 s | met on the sample | first query 17 ms with startup warm-up; needs re-measuring at 800 / 8,000 tracks |
 | 10 mood queries + 20 seeds, graded | **pending** | queries run; human good/acceptable/wrong grading not done. Seed top-5 shares the seed's FMA genre 38% of the time vs ~10% by chance |
 | Provider-neutral links, legal previews | done (beyond P0) | FMA page links; licensed clips served by `GET /audio/{id}` |
+| Activity words ("gym", "study") | known limitation | CLAP maps sound words to energy but not activities: on 800 tracks "hard music for gym" correlates −0.04 with measured energy ("loud energetic music": +0.16). P0 workaround: the Energy filter. Fix: [P1 activity auto-filter](#p1-activity-auto-filter) |
 
 Open review items: R3, R5 (see REVIEW.md). Dataset size (800 → 8,000) and the database
 (Supabase for auth/feedback/playlists) are pending team decisions.
+
+## P1: activity auto-filter
+
+**Problem.** CLAP was trained on descriptions of *sound* ("loud drums, distorted guitar"), not
+*activities*. A larger catalog removed the overlap between opposite queries (40 tracks: the
+"slow music for studying" and "hard music for gym" top-10s shared 8 tracks; 800 tracks: 0), but the
+gym query still has no relationship to measured energy (ρ = −0.04) and still ranks a track titled
+"ukelele" in its top 5. More data will not teach the model what "gym" means.
+
+**Fix.** Translate activity words into attributes the engine already measures, and **show** the
+translation so the user can undo it — the same explainability rule as every other reason.
+
+| Decision | Choice | Why |
+| --- | --- | --- |
+| Energy | **hard filter**, auto-applied, visible, removable | measured for every track; reliable |
+| Tempo | **ranking boost**, never a filter | 23% of tracks (800-track index) have no detectable beat; existing filters hide "unknown" |
+| Phase | **P1** | P0 ships with the manual Energy filter as the workaround |
+
+**Design (build when P1 starts).**
+
+- **Vocabulary** — new `recommendation_engine/intents.py`, a reviewed word table:
+
+  | Words | Energy filter | Tempo boost toward |
+  | --- | --- | --- |
+  | gym, workout, running, cardio, lifting, party, dance | high | ≥ 120 BPM |
+  | study, studying, focus, reading, sleep, meditation, yoga | low | ≤ 100 BPM |
+  | fast | — | ≥ 120 BPM |
+  | slow | — | ≤ 100 BPM |
+
+  Mood words stay in `evidence.SYNONYMS` (agreement only); this table is only for activities.
+- **Parsing** — reuse `query_terms()`'s tokenizer and `NEGATIONS` / `NEGATION_WINDOW`
+  (`evidence.py`), so "not for the gym" infers nothing.
+- **Precedence** — a filter the user set explicitly always wins over an inferred one; two
+  intents that disagree on one attribute ("slow music for the gym") cancel for that attribute.
+- **Energy** — passed as `AttributeFilters(energy=...)` into the existing `apply_filters`
+  (`filters.py`); its evidence entry gains `"inferred_from": "gym"`.
+- **Tempo boost** — a small additive rerank on candidate scores, applied before the top-k cut.
+  Unknown tempo gets neither boost nor penalty. The weight starts as a testing guess and is tuned
+  against feedback (design doc: "initial numbers are testing guesses").
+- **API** (`api/service.py`, `api/app.py`) — responses add
+  `interpreted: [{word, attribute, value}]`; requests accept `infer: false` or
+  `ignore_inferred: ["energy"]`.
+- **Reasons** — `short_reason` says e.g. *"High energy (measured, from 'gym') · closest sound
+  match to …"*, in line with the doc's "Matched the words calm and instrumental in your search".
+- **Frontend** (`src/app/discover/page.js`) — a chip *"Interpreted 'gym' as high energy ×"*;
+  removing it re-runs the search without that interpretation.
+- **Tests** — word table and negation; explicit filter beats inferred; conflicting intents
+  cancel; unknown tempo is neither boosted nor hidden; API `interpreted` / `ignore_inferred`;
+  reason wording.
+- **Ship gate** — on the full FMA-small index, for activity queries written before looking at
+  results: the top-10 mean energy percentile moves toward the requested band, and listeners
+  grade the lists no worse than without inference (same grading-sheet format as P0).
+
+**Later phases.**
+
+- **P1** — the rule table above, checked and tuned with saves/rejects (`FeedbackEvent` already
+  exists in `prisma/schema.prisma`): a word whose inferred filter is often removed, or whose
+  results are often rejected, gets revised.
+- **P2** — learn query intent from accumulated feedback instead of a fixed table; keep it only if
+  it beats the rules (design doc: "only keep a more complex model if it actually improves results").
