@@ -23,6 +23,7 @@ from recommendation_engine.index import (
     METADATA_FILE,
     VECTORS_FILE,
     build_index,
+    current_generation,
     file_digest,
     load_index,
 )
@@ -137,8 +138,8 @@ class TestIndexRoundTrip:
         manifest, _ = make_catalog_files(tmp_path, 2)
         build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
 
-        assert (tmp_path / "index" / VECTORS_FILE).is_file()
-        payload = json.loads((tmp_path / "index" / METADATA_FILE).read_text())
+        assert (current_generation(tmp_path / "index") / VECTORS_FILE).is_file()
+        payload = json.loads((current_generation(tmp_path / "index") / METADATA_FILE).read_text())
         assert payload["space_fingerprint"] == fake_encoder.space.fingerprint()
         assert payload["tracks"][0]["license"] == "CC0"
         assert payload["tracks"][0]["audio_sha256"]
@@ -269,7 +270,7 @@ class TestCorruptIndex:
     def test_malformed_json_is_reported(self, tmp_path, fake_encoder):
         manifest, _ = make_catalog_files(tmp_path, 2)
         build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
-        (tmp_path / "index" / METADATA_FILE).write_text("{oops", encoding="utf-8")
+        (current_generation(tmp_path / "index") / METADATA_FILE).write_text("{oops", encoding="utf-8")
         with pytest.raises(IndexCorruptError, match="not valid JSON"):
             load_index(tmp_path / "index")
 
@@ -278,7 +279,7 @@ class TestCorruptIndex:
         manifest, _ = make_catalog_files(tmp_path, 2)
         build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
 
-        path = tmp_path / "index" / METADATA_FILE
+        path = current_generation(tmp_path / "index") / METADATA_FILE
         payload = json.loads(path.read_text())
         payload["space"]["max_excerpts"] = 99
         path.write_text(json.dumps(payload), encoding="utf-8")
@@ -290,8 +291,13 @@ class TestCorruptIndex:
         manifest, _ = make_catalog_files(tmp_path, 3)
         build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
 
-        path = tmp_path / "index" / VECTORS_FILE
+        path = current_generation(tmp_path / "index") / VECTORS_FILE
         np.save(path, np.load(path)[:1])
+        # Re-stamp the checksum so the load reaches the row-count check.
+        meta = path.with_name(METADATA_FILE)
+        payload = json.loads(meta.read_text())
+        payload["vectors_sha256"] = file_digest(path)
+        meta.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(IndexCorruptError, match="track entries"):
             load_index(tmp_path / "index")
 
@@ -299,7 +305,7 @@ class TestCorruptIndex:
         manifest, _ = make_catalog_files(tmp_path, 2)
         build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
 
-        path = tmp_path / "index" / METADATA_FILE
+        path = current_generation(tmp_path / "index") / METADATA_FILE
         payload = json.loads(path.read_text())
         payload["index_version"] = 99
         path.write_text(json.dumps(payload), encoding="utf-8")
@@ -348,3 +354,164 @@ class TestEmbeddingSpaceFingerprint:
         payload["surprise"] = 1
         with pytest.raises(ValueError, match="unknown"):
             EmbeddingSpace.from_dict(payload)
+
+
+def _restamp(index_dir, *, vectors=None, entries=None):
+    """Hand-edit the published generation, keeping its checksum consistent.
+
+    This simulates corruption that a checksum alone cannot catch (the file was
+    rewritten together with its sidecar), so the content checks must catch it.
+    """
+    generation = current_generation(index_dir)
+    meta = generation / METADATA_FILE
+    payload = json.loads(meta.read_text())
+    if vectors is not None:
+        np.save(generation / VECTORS_FILE, vectors)
+    if entries is not None:
+        payload["tracks"] = entries
+    payload["vectors_sha256"] = file_digest(generation / VECTORS_FILE)
+    meta.write_text(json.dumps(payload), encoding="utf-8")
+
+
+class TestAtomicPublication:
+    """R1: vectors and metadata are published together or not at all."""
+
+    def test_failed_publish_keeps_previous_generation_searchable(
+        self, tmp_path, fake_encoder, monkeypatch
+    ):
+        manifest, _ = make_catalog_files(tmp_path, 2)
+        tracks = load_manifest(manifest)
+        before, _ = build_index(tracks, fake_encoder, tmp_path / "index")
+
+        def boom(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        # Both new files are fully written; only the pointer swap fails. The
+        # reversed order means a mixed old/new pair would mislabel every vector.
+        monkeypatch.setattr("recommendation_engine.index._write_pointer", boom)
+        with pytest.raises(OSError, match="disk full"):
+            build_index(list(reversed(tracks)), fake_encoder, tmp_path / "index", reuse=False)
+
+        after = load_index(tmp_path / "index")
+        assert after.track_ids == before.track_ids
+        assert np.array_equal(after.vectors, before.vectors)
+        assert [r.track_id for r in similar_to(after, "t0", k=1)] == ["t1"]
+        generations = [p for p in (tmp_path / "index").iterdir() if p.is_dir()]
+        assert generations == [current_generation(tmp_path / "index")]
+
+    def test_vectors_from_another_generation_are_rejected(self, tmp_path, fake_encoder):
+        manifest, entries = make_catalog_files(tmp_path, 2)
+        build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        old_vectors = (current_generation(tmp_path / "index") / VECTORS_FILE).read_bytes()
+
+        write_wav(tmp_path / "audio" / "track0.wav", sine(999, 0.2, 8_000), 8_000)
+        build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        (current_generation(tmp_path / "index") / VECTORS_FILE).write_bytes(old_vectors)
+
+        with pytest.raises(IndexCorruptError, match="checksum"):
+            load_index(tmp_path / "index")
+
+    def test_only_recent_generations_are_kept(self, tmp_path, fake_encoder):
+        manifest, _ = make_catalog_files(tmp_path, 2)
+        for _ in range(4):
+            build_index(load_manifest(manifest), fake_encoder, tmp_path / "index", reuse=False)
+        generations = [p for p in (tmp_path / "index").iterdir() if p.is_dir()]
+        assert len(generations) == 2
+        assert current_generation(tmp_path / "index") in generations
+
+
+BAD_ROWS = {
+    "nan": [np.nan, 0.0, 0.0, 0.0],
+    "infinity": [np.inf, 0.0, 0.0, 0.0],
+    "zero": [0.0, 0.0, 0.0, 0.0],
+    "float32-norm-overflow": [3e38, 3e38, 0.0, 0.0],
+    "not-unit-length": [0.5, 0.0, 0.0, 0.0],
+}
+
+
+class TestStoredVectorValidation:
+    """R2: invalid stored vectors never reach ranking or cache reuse."""
+
+    @pytest.mark.parametrize("kind", sorted(BAD_ROWS))
+    def test_corrupt_rows_are_rejected_on_load(self, tmp_path, fake_encoder, kind):
+        manifest, _ = make_catalog_files(tmp_path, 2)
+        catalog, _ = build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        vectors = catalog.vectors.copy()
+        vectors[0] = np.array(BAD_ROWS[kind], dtype=np.float32)
+        _restamp(tmp_path / "index", vectors=vectors)
+
+        with pytest.raises(IndexCorruptError):
+            load_index(tmp_path / "index")
+
+    @pytest.mark.parametrize("kind", ["nan", "zero", "not-unit-length"])
+    def test_corrupt_cache_is_rebuilt_not_reused(self, tmp_path, fake_encoder, kind):
+        manifest, _ = make_catalog_files(tmp_path, 2)
+        catalog, _ = build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        vectors = catalog.vectors.copy()
+        vectors[0] = np.array(BAD_ROWS[kind], dtype=np.float32)
+        _restamp(tmp_path / "index", vectors=vectors)
+
+        rebuilt, report = build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        assert report.reused == []
+        assert sorted(report.embedded) == ["t0", "t1"]
+        assert np.array_equal(rebuilt.vectors, catalog.vectors)
+
+    def test_save_refuses_invalid_vectors_and_keeps_the_old_index(self, tmp_path, fake_encoder):
+        from recommendation_engine.index import save_index
+
+        manifest, _ = make_catalog_files(tmp_path, 2)
+        catalog, _ = build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        bad = catalog.vectors.copy()
+        bad[1] = np.nan
+        entries = [catalog.metadata[t] for t in catalog.track_ids]
+        with pytest.raises(ValueError, match="non-finite"):
+            save_index(tmp_path / "index", space=catalog.space, entries=entries, vectors=bad)
+        assert np.array_equal(load_index(tmp_path / "index").vectors, catalog.vectors)
+
+    def test_catalog_rejects_non_finite_rows(self, space):
+        from recommendation_engine.similarity import Catalog
+
+        vectors = np.array([[1, 0, 0, 0], [np.nan, 0, 0, 0]], dtype=np.float32)
+        with pytest.raises(ValueError, match="NaN or infinite"):
+            Catalog(space=space, track_ids=("a", "b"), metadata={}, vectors=vectors)
+
+    def test_cosine_scores_stay_finite_for_large_finite_values(self):
+        from recommendation_engine.similarity import cosine_scores
+
+        matrix = np.array([[3e38, 3e38, 0, 0], [0, 1, 0, 0]], dtype=np.float32)
+        scores = cosine_scores(np.array([1, 1, 0, 0], dtype=np.float32), matrix)
+        assert np.all(np.isfinite(scores))
+        assert scores[0] == pytest.approx(1.0)
+        assert scores[1] == pytest.approx(1 / np.sqrt(2))
+
+
+class TestMalformedIndexRecovery:
+    """R4: malformed artifacts raise the domain error, so a rebuild recovers."""
+
+    @pytest.mark.parametrize("bad_entry", [None, 7, "t0", ["t0"]])
+    def test_non_object_entries_are_a_corrupt_index(self, tmp_path, fake_encoder, bad_entry):
+        manifest, _ = make_catalog_files(tmp_path, 2)
+        catalog, _ = build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        entries = [catalog.metadata[t] for t in catalog.track_ids]
+        entries[0] = bad_entry
+        _restamp(tmp_path / "index", entries=entries)
+
+        with pytest.raises(IndexCorruptError, match="entry 0"):
+            load_index(tmp_path / "index")
+        _, report = build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        assert sorted(report.embedded) == ["t0", "t1"]
+
+    @pytest.mark.parametrize("payload", [b"", b"\x93NUMPY\x01\x00"])
+    def test_empty_or_truncated_vector_file_is_a_corrupt_index(
+        self, tmp_path, fake_encoder, payload
+    ):
+        manifest, _ = make_catalog_files(tmp_path, 2)
+        build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        generation = current_generation(tmp_path / "index")
+        (generation / VECTORS_FILE).write_bytes(payload)
+        _restamp(tmp_path / "index")
+
+        with pytest.raises(IndexCorruptError, match="unreadable"):
+            load_index(tmp_path / "index")
+        _, report = build_index(load_manifest(manifest), fake_encoder, tmp_path / "index")
+        assert sorted(report.embedded) == ["t0", "t1"]

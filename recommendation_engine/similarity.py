@@ -71,6 +71,12 @@ class Catalog:
             )
         if len(set(self.track_ids)) != len(self.track_ids):
             raise ValueError("catalog contains duplicate track ids")
+        if self.vectors.size:
+            if not np.all(np.isfinite(self.vectors)):
+                raise ValueError("catalog contains NaN or infinite vector values")
+            norms = np.linalg.norm(self.vectors.astype(np.float64), axis=1)
+            if np.any(norms < MIN_NORM):
+                raise ValueError("catalog contains a vector with effectively zero norm")
 
     def __len__(self) -> int:
         return len(self.track_ids)
@@ -106,14 +112,23 @@ def cosine_scores(query: np.ndarray, matrix: np.ndarray) -> np.ndarray:
             f"query has {query.shape[0]} dimensions, matrix rows have {matrix.shape[1]}"
         )
 
-    query_norm = float(np.linalg.norm(query))
+    if not np.all(np.isfinite(query)):
+        raise ValueError("query vector contains NaN or infinite values")
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError("catalog contains NaN or infinite vector values")
+
+    # float64 for the arithmetic: large finite float32 values overflow to inf when
+    # squared inside a float32 norm, which would turn a valid row into a NaN score.
+    query64 = query.astype(np.float64)
+    matrix64 = matrix.astype(np.float64)
+    query_norm = float(np.linalg.norm(query64))
     if query_norm < MIN_NORM:
         raise ValueError("query vector has effectively zero norm")
-    row_norms = np.linalg.norm(matrix, axis=1)
+    row_norms = np.linalg.norm(matrix64, axis=1)
     if np.any(row_norms < MIN_NORM):
         raise ValueError("catalog contains a vector with effectively zero norm")
 
-    scores = (matrix @ query) / (row_norms * query_norm)
+    scores = (matrix64 @ query64) / (row_norms * query_norm)
     # Floating-point error can push an identical pair slightly past 1.0; clipping
     # keeps the contract that results are valid cosine similarities.
     return np.clip(scores, -1.0, 1.0).astype(np.float32)
