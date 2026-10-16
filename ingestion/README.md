@@ -19,11 +19,9 @@ reuses the previous one's vectors, so an interrupted run loses at most one stage
 800-track index is usable within ~10 minutes. `--device mps` gives the same vectors as CPU
 (cosine ≥ 0.9999999) and runs attribute analysis 2.4× faster on Apple silicon.
 
-The manual steps it automates:
-
 [FMA](https://github.com/mdeff/fma) is the starter catalog: Creative Commons audio with
 per-track license, artist, title and genre. We do **not** clone that repository — it holds
-the authors' notebooks. We download its data archives:
+the authors' notebooks. The manual steps the script automates — download its data archives:
 
 ```bash
 mkdir -p data/audio/fma && cd data/audio/fma          # data/audio/ is git-ignored
