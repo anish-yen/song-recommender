@@ -7,7 +7,11 @@ A focused Next.js music-discovery interface for describing a vibe, starting from
 1. Copy `.env.example` to `.env` and set `DATABASE_URL`, `DIRECT_URL`, and a random `JWT_SECRET` (32+ characters).
 2. Install packages: `npm install`
 3. Apply the Prisma migration and generate the client: `npm run prisma:migrate && npm run prisma:generate`
-4. Start the application: `npm run dev`
+4. Start the application: `npm run dev` (port 3000 by default; `npm run dev -- --port 3001` if it is taken)
+
+To get live results instead of mock data, start the API (`uv run uvicorn api.app:app --port 8000`, see
+[../api/README.md](../api/README.md)) and set `RECOMMENDATION_API_URL="http://127.0.0.1:8000"`. Discovery,
+filters, the seed picker and previews work without a database; sign-up, feedback and playlists need one.
 
 Run checks with `npm test`, `npm run lint`, and `npm run build`.
 

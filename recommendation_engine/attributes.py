@@ -16,8 +16,8 @@ AudioSet's sigmoid scores for genre and vocal classes are small and uncalibrated
 and argmaxes chosen on the starter catalog, not from treating a score as a
 probability. Mood is the weakest: AudioSet mood scores on the starter catalog peaked
 at 0.04, so a mood is reported only above a low absolute cutoff, and several can
-apply at once. The earlier CLAP zero-shot estimator lives in
-``archive/clap_zero_shot/``.
+apply at once. An earlier CLAP zero-shot estimator was replaced by this one
+(see the engine README, "Why AST rather than CLAP prompts").
 
 ``attributes.json`` is bound to each track's audio sha256 and to a digest of
 everything below that changes a label, so editing a class map or a threshold, or

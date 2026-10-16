@@ -4,7 +4,8 @@ Reviewed on 2026-09-21. **Decision: retain the architecture; request changes bef
 
 Publication preparation update: repository wording and instructions address R6, and the
 [real-audio guide](recommendation_engine/EVALUATION.md) supplies the evaluation workflow.
-R1–R5 remain open. At the user's request, publish a draft for review before implementing
+R1, R2 and R4 are fixed on `integration/p0` with regression tests (`TestAtomicPublication`,
+`TestStoredVectorValidation`, `TestMalformedIndexRecovery` in `tests/test_catalog.py`); R3 and R5 remain open. At the user's request, publish a draft for review before implementing
 those fixes or completing music evaluation; neither publication nor passing tests clears
 the merge blockers. The findings and verification below describe the original reviewed commit.
 

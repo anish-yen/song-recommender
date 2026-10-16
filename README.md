@@ -5,70 +5,83 @@ embeddings — rather than by collaborative filtering over artist and genre.
 
 ## P0 scope (2-week MVP)
 
-A basic working recommender, nothing more:
-
 1. **Mood search** — natural-language queries like "late-night beats without heavy vocals".
 2. **Similar songs** — given a seed track, find tracks that sound like it.
+3. **Filters** — energy, tempo, vocals, mood, genre.
+4. **A short evidence-based reason** for every result.
 
-The design doc's P0 list also includes simple filters (energy, tempo, vocals, mood, genre) and
-a short evidence-based reason for each result; the engine implements both. Personalisation and
-better models are P1 and later.
+Item-by-item status against the design doc: [PLAN.md → P0 status](recommendation_engine/PLAN.md#p0-status-against-the-design-doc-2026-10-16-integrationp0).
+Personalisation, playlists export, and social features are P1 and later.
 
-## Features
+## How it fits together
 
-Each subfeature keeps its own README covering what it does, what has been built, and the design
-choices behind it.
-
-| Feature | README | Responsibility | Status |
-| --- | --- | --- | --- |
-| **Recommendation engine** — CLAP embeddings, mood search, similar-song retrieval, ranking, attribute filters, evidence-based reasons | [recommendation_engine/README.md](recommendation_engine/README.md) | Recommendation core | Local pipeline verified; review fixes and music evaluation pending |
-| **API** — `POST /search`, `GET /similar/{track_id}` | [api/README.md](api/README.md) | API and database integration | Not implemented (design documented) |
-| **Frontend** — Next.js discovery, auth, feedback, playlists (Prisma/Postgres) | [src/README.md](src/README.md) | Frontend | Built; not yet wired to the engine |
-
-Superseded approaches live in [`archive/`](archive/clap_zero_shot/README.md) with a note on why
-they were replaced.
-
-Other P0 slices — catalog/ingestion, frontend, integration and delivery — are **proposed, not
-confirmed**, and get their own folders and READMEs as they start.
-
-## Setup
-
-Requires [uv](https://docs.astral.sh/uv/). Python 3.12 is pinned because torch has no 3.14
-wheels yet; uv will fetch the right interpreter.
-
-```bash
-uv sync
-uv run pytest        # no model weights or GPU required
+```
+FMA dataset ──ingestion──▶ manifest.json ──build-index──▶ .index/  (CLAP vectors + AST attributes)
+                                                              │
+browser ──▶ Next.js (src/, :3001) ──/api/recommendations──▶ FastAPI (api/, :8000)
+                 │                                        loads .index once, encodes queries
+                 └── Prisma ──▶ Postgres (auth, feedback, playlists — not configured yet)
 ```
 
-Then follow [the engine's README](recommendation_engine/README.md#running-it) to build an index
-and run a query. Audio files, model checkpoints, and generated indexes are all git-ignored —
-the catalog is shared out of band, never committed.
+| Feature | README | Status |
+| --- | --- | --- |
+| **Ingestion** — FMA dataset → manifest | [ingestion/README.md](ingestion/README.md) | working |
+| **Recommendation engine** — CLAP embeddings, mood search, similar songs, filters, reasons | [recommendation_engine/README.md](recommendation_engine/README.md) | working; listening evaluation pending |
+| **API** — `POST /recommendations`, `/search`, `/similar/{id}`, `/tracks`, `/filters`, `/audio/{id}` | [api/README.md](api/README.md) | working over the local index; pgvector next |
+| **Frontend** — Next.js discovery, auth, feedback, playlists | [src/README.md](src/README.md) | discovery wired to the API; auth/feedback/playlists need a database |
+
+## Run it locally
+
+Requires [uv](https://docs.astral.sh/uv/), Node 20+, and 7-Zip (`brew install sevenzip`) for
+the FMA archives. Python 3.12 is pinned because torch has no 3.14 wheels yet.
+
+```bash
+uv sync && npm install && npx prisma generate
+
+# 1. Data: download FMA and write a manifest (see ingestion/README.md for the downloads)
+uv run python -m ingestion.fma --metadata data/audio/fma/fma_metadata \
+    --audio data/audio/fma/fma_small --per-genre 5 --out data/manifest.json
+
+# 2. Index: CLAP vectors (~780 MB model download once), then attributes (~350 MB once)
+uv run python -m recommendation_engine.demo build-index --manifest data/manifest.json
+uv run python -m recommendation_engine.attributes
+
+# 3. API on :8000 (docs at http://localhost:8000/docs)
+uv run uvicorn api.app:app --port 8000
+
+# 4. Frontend on :3001, in a second terminal
+echo 'RECOMMENDATION_API_URL="http://127.0.0.1:8000"' > .env.local
+echo "JWT_SECRET=\"$(openssl rand -hex 32)\"" >> .env.local
+npm run dev -- --port 3001        # open http://localhost:3001/discover
+```
+
+Without a `DATABASE_URL`, discovery, filters, previews and provider links work; sign-up,
+save/reject and playlists need Postgres (Supabase planned — see [src/README.md](src/README.md)).
+Audio, model checkpoints, indexes and `.env*` files are git-ignored; never commit them.
+
+## Tests
+
+```bash
+uv run pytest                  # engine + API + ingestion; no model weights needed
+uv run pytest -m real_model    # real CLAP and AST checkpoints
+npm test && npm run lint && npm run build
+```
 
 ## Current status
 
-The recommendation engine's pipeline works end to end against the real
-`laion/larger_clap_general` checkpoint (the music checkpoint was dropped; see
-[REVIEW.md](REVIEW.md) R7). Filters and one-line reasons use AST tags (vocals, genre, mood) and
-measured tempo and energy, checked so far on an 11-track starter catalog. **Recommendation
-quality is not yet measured** — that needs a larger catalog and human listening. See the engine README's
-[Limitations](recommendation_engine/README.md#limitations) before demoing anything.
-
-To add real music and evaluate both recommendation paths, follow the
-[real-audio evaluation guide](recommendation_engine/EVALUATION.md). This uses the existing
-checkpoint; it does not train a model. [REVIEW.md](REVIEW.md) records the architectural findings
-that must be addressed before merge. A draft PR can be published before music evaluation.
+Verified on a 40-track FMA sample: specific queries ("hip hop with rap vocals", "sad acoustic
+guitar") return the expected genres, a seed's top 5 share its FMA genre 38% of the time
+(chance: ~10%), and a query takes ~15 ms after startup. **Recommendation quality is not yet
+graded by listeners** — follow the [evaluation guide](recommendation_engine/EVALUATION.md)
+before claiming it. Known weaknesses: one "hub" track surfaces for many unrelated queries
+(no diversity rerank yet), and words like "without" are not enforced (use the vocals filter).
+[REVIEW.md](REVIEW.md) tracks architectural findings; R3 and R5 remain open.
 
 ## Working agreements
 
-- **Current work** — keep all changes on `feature/recommender-core`:
-  ```bash
-  git switch feature/recommender-core
-  ```
-- **Rebasing** — keep branches current instead of accumulating merge commits, with a clean tree:
-  ```bash
-  git fetch origin && git rebase origin/main
-  ```
+- **Branches** — `integration/p0` combines `feature/recommender-core`,
+  `feature/attribute-estimates` and `frontend`. Never merge directly into `main`; changes land
+  through a reviewed PR.
 - **Documentation** — this README points at every subfeature; each subfeature README explains the
   feature, what was done, and why.
 - **Testing** — tests must exercise real logic (the arithmetic of similarity, API contract edge

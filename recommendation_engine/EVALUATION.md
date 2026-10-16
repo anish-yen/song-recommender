@@ -44,8 +44,8 @@ uv run python -m recommendation_engine.demo --index-dir .index-eval \
     build-index --manifest data/manifest.json
 ```
 
-Use a **fresh** `--index-dir`, and let the build finish before querying. Interrupted
-rebuilds are a known defect — see R1/R2 in [../REVIEW.md](../REVIEW.md).
+Any `--index-dir` works: a rebuild is published atomically, so an interrupted build leaves
+the previous index searchable (R1, fixed).
 
 Check the report: any track in `FAILED` is excluded from the index, not silently
 embedded. Confirm the track count matches what you expect.

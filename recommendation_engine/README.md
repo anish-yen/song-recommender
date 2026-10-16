@@ -1,6 +1,6 @@
 # Recommendation Engine
 
-Branch: `feature/recommender-core` · Status: **Local pipeline verified; review fixes and music evaluation pending**
+Branch: `integration/p0` · Status: **Local pipeline verified; R1/R2/R4 fixed; listening evaluation pending**
 
 Recommends songs by **how they sound**, not by who made them. Both P0 entry points are two
 queries against one embedding space:
@@ -19,8 +19,9 @@ Implementation plan and verified constraints: [PLAN.md](PLAN.md).
 | Text mood query → ranked results | working |
 | Seed track → ranked neighbours, seed excluded | working |
 | Exact cosine retrieval + ranking rules | covered by the default test suite |
-| Index persistence with content-hash cache invalidation | implemented; integrity fixes pending in [REVIEW.md](../REVIEW.md) |
-| FastAPI endpoints, PostgreSQL/pgvector | **not started** (API and database integration; see [../api/README.md](../api/README.md)) |
+| Index persistence with content-hash cache invalidation | implemented; atomic generations and stored-vector validation (R1, R2, R4 in [REVIEW.md](../REVIEW.md)) fixed |
+| FastAPI endpoints | implemented ([../api/README.md](../api/README.md)) |
+| PostgreSQL/pgvector | **not started** — next step, checked against this module's NumPy results |
 | Vocals / genre / mood (AST model estimates), tempo / energy (measured) | implemented ([attributes](#attributes)); checked on the 11-track starter catalog only; mood is the weakest |
 | Vocals / genre / mood / energy / tempo filters | implemented ([filters](#filters-and-reasons)) |
 | A short evidence-based reason for every result | implemented ([reasons](#filters-and-reasons)); **ship only after** an agreement check against labelled tracks |
@@ -139,7 +140,7 @@ that are worded differently:
 | energy | **measured**: mean of the loudness and onset-rate percentile ranks | percentile **within this catalog** |
 
 **Why AST rather than CLAP prompts.** The first version scored CLAP vectors against text
-prompts (now in [archive/clap_zero_shot](../archive/clap_zero_shot/README.md)). That made every
+prompts (removed; it was never committed). That made every
 reason partly the search embedding explaining its own match, and it mislabelled rap as pop and
 missed country. `MIT/ast-finetuned-audioset-10-10-0.4593` (BSD-3-Clause, pinned to `f826b80`) is a
 supervised tagger trained on human-labelled AudioSet clips, independent of the search model. It
@@ -154,7 +155,7 @@ orchestral rock track (electronic); the a cappella ballad is `null`.
 **Mood is the weakest attribute.** AudioSet mood scores peaked at 0.04 on the starter catalog,
 against a floor near 0.001 for unrelated classes. Every mood at or above 0.008 applies, so a song
 can be both `sad` and `calm` (the three calm tracks were); 4 of 11 tracks got no mood. The cutoff
-is absolute on purpose: ranking each class against the catalog, as the archived CLAP version
+is absolute on purpose: ranking each class against the catalog, as the earlier CLAP version
 did, turned a 0.002 `Angry music` score into a top tag. `Funny music` is not mapped; it only
 appeared as noise. AST has seven coarse mood classes, so there is no "dreamy" or "romantic".
 A filter treats "no mood detected" as unknown, not as a mismatch. Mood is independent of the
@@ -242,9 +243,10 @@ normalization, repeatability, distinguishability, resampling, text-prompt collap
 click-track tempo. They cannot establish musical relevance; the few real-music checks need the
 fixtures above.
 
-**Index integrity fixes remain open.** See [REVIEW.md](../REVIEW.md). For an exploratory local
-evaluation, use a fresh index directory for each build and finish the build before querying it.
-This reduces exposure to interrupted rebuilds; it does not resolve the recorded defects.
+**Two review findings remain open.** R1, R2 and R4 are fixed: each build is published as an
+immutable generation behind an atomic `CURRENT` pointer, and corrupt stored vectors are rejected
+and rebuilt. R3 (enforcing every declared preprocessing label) and R5 (keeping `excerpt_count`
+on reuse) are still open; see [REVIEW.md](../REVIEW.md). Neither can mix up tracks.
 
 **Free-text exclusions are not enforced.** "Late-night beats *without heavy vocals*" is
 approximate semantic search; the "without" clause does not filter anything (query agreement

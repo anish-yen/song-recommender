@@ -28,8 +28,10 @@ Values verified against the live checkpoint on 2026-09-21, not recalled:
   requested; model loaded once per encoder instance.
 - Embeddings are L2-normalised per excerpt, averaged, then re-normalised.
 - No invented explanations: no mood/energy/acousticness labels are derived from embedding dimensions.
-- Out of scope for this milestone: FastAPI implementation, PostgreSQL/pgvector, frontend, auth,
-  collaborative filtering, fine-tuning, MERT, multiple embedding spaces.
+- Originally out of scope: FastAPI, PostgreSQL/pgvector, frontend, auth, filters, explanations.
+  The design doc puts filters, evidence-based reasons and pgvector in P0, so the integration
+  branch has since added filters, reasons, FastAPI and frontend wiring — see "P0 status" below.
+  Still out of scope: collaborative filtering, fine-tuning, MERT, multiple embedding spaces.
 
 ---
 
@@ -103,3 +105,26 @@ opt-in real-model check; report actual output.
 ### Task 8 — Documentation
 Central `README.md` linking each subfeature README; this folder's README covering what works, how to run
 it, design choices and limitations; `api/README.md` documenting the proposed endpoints as not implemented.
+
+---
+
+## P0 status against the design doc (2026-10-16, `integration/p0`)
+
+`integration/p0` combines `feature/recommender-core`, `feature/attribute-estimates` (model fix,
+attributes, filters, reasons) and `frontend`. Measured on a 40-track FMA sample (5 per genre).
+
+| Design-doc P0 item | State | Evidence |
+| --- | --- | --- |
+| Mood search in natural language | done | `POST /recommendations`, `POST /search`; ~15 ms per query after a 3 s model load |
+| Similar songs from a seed | done | `GET /similar/{id}`, seed typeahead in the UI; seed excluded |
+| CLAP embeddings | done | `laion/larger_clap_general@ada0c23` (the music checkpoint collapses text, R7) |
+| pgvector similarity search | **pending** | NumPy exact cosine is the reference; pgvector must match it exactly |
+| Filters: energy, tempo, vocals, mood, genre | done | AST estimates + measured tempo/energy; applied before the top-k cut |
+| Short evidence-based reason per result | done | `why` built only from the match, applied filters and labelled estimates |
+| Artist cap / diversity | partial | cap of 2 per artist on `/recommendations`; no diversity score yet — one track ("Machines and Muscles") appears in 7 of 12 mood top-5s on the sample |
+| 10 results in under 2 s | met on the sample | first query 17 ms with startup warm-up; needs re-measuring at 800 / 8,000 tracks |
+| 10 mood queries + 20 seeds, graded | **pending** | queries run; human good/acceptable/wrong grading not done. Seed top-5 shares the seed's FMA genre 38% of the time vs ~10% by chance |
+| Provider-neutral links, legal previews | done (beyond P0) | FMA page links; licensed clips served by `GET /audio/{id}` |
+
+Open review items: R3, R5 (see REVIEW.md). Dataset size (800 → 8,000) and the database
+(Supabase for auth/feedback/playlists) are pending team decisions.
