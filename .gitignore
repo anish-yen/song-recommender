@@ -26,6 +26,7 @@ models/
 
 # Generated embedding indexes
 .index/
+.index-*/
 index/
 *.npy
 *.npz

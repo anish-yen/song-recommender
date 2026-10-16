@@ -6,6 +6,21 @@ change to the engine.
 
 ## FMA (Free Music Archive)
 
+**One command for the whole catalog** (download → verify → extract → index, each step skipped
+when already done):
+
+```bash
+uv run python -m ingestion.fma_catalog --index-dir .index-fma-small --device mps   # ~1.5 h for 8,000 tracks
+INDEX_DIR=.index-fma-small uv run uvicorn api.app:app --port 8000
+```
+
+It builds in stages (`--stages 100,400,0`: 800, then 3,200, then all 8,000 tracks). Each stage
+reuses the previous one's vectors, so an interrupted run loses at most one stage, and the
+800-track index is usable within ~10 minutes. `--device mps` gives the same vectors as CPU
+(cosine ≥ 0.9999999) and runs attribute analysis 2.4× faster on Apple silicon.
+
+The manual steps it automates:
+
 [FMA](https://github.com/mdeff/fma) is the starter catalog: Creative Commons audio with
 per-track license, artist, title and genre. We do **not** clone that repository — it holds
 the authors' notebooks. We download its data archives:
