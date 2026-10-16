@@ -122,7 +122,7 @@ attributes, filters, reasons) and `frontend`. Measured on a 40-track FMA sample 
 | Filters: energy, tempo, vocals, mood, genre | done | AST estimates + measured tempo/energy; applied before the top-k cut |
 | Short evidence-based reason per result | done | `why` built only from the match, applied filters and labelled estimates |
 | Artist cap / diversity | partial | cap of 2 per artist on `/recommendations`; no diversity score yet — one track ("Machines and Muscles") appears in 7 of 12 mood top-5s on the sample |
-| 10 results in under 2 s | met on the sample | first query 17 ms with startup warm-up; needs re-measuring at 800 / 8,000 tracks |
+| 10 results in under 2 s | **met** on the starter dataset | full FMA-small (7,993 tracks; 7 corrupt/silent clips skipped): 30 requests at k=10 across search, similar, blend and filtered — median 23 ms, p95 182 ms, max 205 ms (Apple-silicon CPU, NumPy exact search) |
 | 10 mood queries + 20 seeds, graded | **pending** | queries run; human good/acceptable/wrong grading not done. Seed top-5 shares the seed's FMA genre 38% of the time vs ~10% by chance |
 | Provider-neutral links, legal previews | done (beyond P0) | FMA page links; licensed clips served by `GET /audio/{id}` |
 | Activity words ("gym", "study") | known limitation | CLAP maps sound words to energy but not activities: on 800 tracks "hard music for gym" correlates −0.04 with measured energy ("loud energetic music": +0.16). P0 workaround: the Energy filter. Fix: [P1 activity auto-filter](#p1-activity-auto-filter) |
