@@ -23,6 +23,7 @@ choices behind it.
 | --- | --- | --- | --- |
 | **Recommendation engine** — CLAP embeddings, mood search, similar-song retrieval, ranking, attribute filters, evidence-based reasons | [recommendation_engine/README.md](recommendation_engine/README.md) | Recommendation core | Local pipeline verified; review fixes and music evaluation pending |
 | **API** — `POST /search`, `GET /similar/{track_id}` | [api/README.md](api/README.md) | API and database integration | Not implemented (design documented) |
+| **Frontend** — Next.js discovery, auth, feedback, playlists (Prisma/Postgres) | [src/README.md](src/README.md) | Frontend | Built; not yet wired to the engine |
 
 Superseded approaches live in [`archive/`](archive/clap_zero_shot/README.md) with a note on why
 they were replaced.

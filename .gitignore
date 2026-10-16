@@ -37,3 +37,10 @@ index/
 
 # OS / editor
 .DS_Store
+
+# Frontend (Next.js / Prisma)
+node_modules/
+.next/
+.env.local
+generated/
+*.log
