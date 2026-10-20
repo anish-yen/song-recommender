@@ -121,7 +121,7 @@ attributes, filters, reasons) and `frontend`. Measured on a 40-track FMA sample 
 | pgvector similarity search | **pending** | NumPy exact cosine is the reference; pgvector must match it exactly |
 | Filters: energy, tempo, vocals, mood, genre | done | AST estimates + measured tempo/energy; applied before the top-k cut |
 | Short evidence-based reason per result | done | `why` built only from the match, applied filters and labelled estimates |
-| Artist cap / diversity | partial | cap of 2 per artist on `/recommendations`; no diversity score yet — one track ("Machines and Muscles") appears in 7 of 12 mood top-5s on the sample |
+| Artist cap / diversity | partial | cap of 2 per artist on `/recommendations`; within-list MMR rerank (`diversity.py`) over a 50-candidate pool in every mode — on FMA-small it reorders 0-6 of a top 10 and never reaches below similarity rank 12, because the artist cap already removes near-duplicates. Cross-query repetition is not addressed: one track ("Machines and Muscles") appears in 7 of 12 mood top-5s on the sample |
 | 10 results in under 2 s | **met** on the starter dataset | full FMA-small (7,993 tracks; 7 corrupt/silent clips skipped): 30 requests at k=10 across search, similar, blend and filtered — median 23 ms, p95 182 ms, max 205 ms (Apple-silicon CPU, NumPy exact search) |
 | 10 mood queries + 20 seeds, graded | **pending** | queries run; human good/acceptable/wrong grading not done. Seed top-5 shares the seed's FMA genre 38% of the time vs ~10% by chance |
 | Provider-neutral links, legal previews | done (beyond P0) | FMA page links; licensed clips served by `GET /audio/{id}` |
