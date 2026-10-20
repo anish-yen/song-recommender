@@ -96,6 +96,41 @@ class TestRecommendationsContract:
         assert body["results"][0]["why"].startswith("Instrumental (model estimate)")
 
 
+class TestDiscoverPagePayload:
+    """The exact body ``src/app/discover/page.js`` sends via ``/api/recommendations``.
+
+    HTML selects and number inputs yield strings, so every filter key always arrives,
+    "" means "any", and tempo bounds are numeric strings. The picker seed carries all
+    three fields. Renaming a key or making ``Filters`` strict would break discovery.
+    """
+
+    EMPTY = {"vocals": "", "genre": "", "mood": "", "energy": "",
+             "tempo_min": "", "tempo_max": ""}
+
+    def test_all_blank_filters_mean_no_filter(self, client):
+        response = client.post("/recommendations",
+                                json={"query": "toward a", "seed": None, "filters": self.EMPTY, "k": 5})
+        assert response.status_code == 200
+        assert ids(response) == ["a", "c", "b", "d"]
+        assert response.json()["hidden"] == {"mismatch": 0, "unknown": 0}
+
+    def test_picker_seed_with_title_and_artist(self, client):
+        seed = {"providerId": "a", "title": "Title a", "artist": "Artist One"}
+        response = client.post("/recommendations",
+                               json={"query": "", "seed": seed, "filters": self.EMPTY, "k": 5})
+        assert response.json()["mode"] == "similar"
+        assert ids(response) == ["c", "b", "d"]
+
+    def test_tempo_bounds_arrive_as_strings(self, client):
+        filters = {**self.EMPTY, "tempo_min": "60", "tempo_max": "200"}
+        numeric = {**self.EMPTY, "tempo_min": 60, "tempo_max": 200}
+        as_text = client.post("/recommendations", json={"query": "toward a", "filters": filters, "k": 5})
+        as_number = client.post("/recommendations", json={"query": "toward a", "filters": numeric, "k": 5})
+        assert as_text.status_code == 200
+        assert ids(as_text) == ids(as_number)
+        assert as_text.json()["hidden"] == as_number.json()["hidden"]
+
+
 class TestErrors:
     @pytest.mark.parametrize("payload", [
         {},
