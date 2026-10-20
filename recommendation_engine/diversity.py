@@ -12,8 +12,10 @@ so a track that sounds like something already in the list has to beat it by more
   ship switched off and be tuned later.
 * The weight is a testing guess, not a value derived from data (design doc:
   "initial numbers are testing guesses"). Tune it against the graded evaluation.
-* Relevance stays the original cosine score; the result's ``similarity`` field is
-  never replaced by the MMR score, so explanations remain measured evidence.
+* Relevance is the result's own score rescaled to [0, 1] within the pool, because
+  the three modes score on different scales (see ``_pool_scaled``). The result's
+  ``similarity`` field is never replaced, so explanations remain measured evidence.
+* Redundancy is a cosine clipped at 0: sounding opposite earns no variety bonus.
 """
 
 from __future__ import annotations
@@ -50,8 +52,10 @@ def mmr_rerank(
 
     vectors = np.stack([catalog.vector_of(r.track_id) for r in ranked]).astype(np.float64)
     vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
-    pairwise = vectors @ vectors.T  # cosine between every pair of candidates
-    relevance = np.array([r.similarity for r in ranked], dtype=np.float64)
+    # Cosine between every pair of candidates. An opposite-sounding track is not
+    # "more different" than an unrelated one, so a negative cosine earns no bonus.
+    pairwise = np.clip(vectors @ vectors.T, 0.0, None)
+    relevance = _pool_scaled(np.array([r.similarity for r in ranked], dtype=np.float64))
 
     picked: list[int] = [0]  # the best match always stays first
     # max similarity of each candidate to anything picked so far
@@ -69,3 +73,17 @@ def mmr_rerank(
         redundancy = np.maximum(redundancy, pairwise[best_i])
 
     return [ranked[i] for i in picked]
+
+
+def _pool_scaled(scores: np.ndarray) -> np.ndarray:
+    """Map the pool's scores onto [0, 1] so ``lambda_`` means the same in every mode.
+
+    Mood-search scores (text-to-audio cosine) span ~0.1 over a 50-track pool,
+    similar-song scores (audio-to-audio cosine) ~0.15, and blended scores are sums
+    of z-scores. Redundancy is always an audio-to-audio cosine, so only relevance
+    needs rescaling. Order is preserved, so ``lambda_ = 1.0`` is still plain order.
+    """
+    spread = float(scores.max() - scores.min())
+    if spread < 1e-12:
+        return np.zeros_like(scores)
+    return (scores - float(scores.min())) / spread

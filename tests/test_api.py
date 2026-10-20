@@ -13,10 +13,12 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+import api.service as service_module
 from api.app import create_app
 from api.service import Recommender
+from recommendation_engine import diversity
 
-from .conftest import SPACE_4D
+from .conftest import SPACE_4D, make_catalog
 from .test_evidence import ATTRS
 
 RESULT_KEYS = {"providerId", "title", "artist", "album", "coverArtUrl", "providerUrl",
@@ -76,7 +78,7 @@ class TestRecommendationsContract:
         first = body["results"][0]
         assert first["similarities"] == {"query": pytest.approx(0.7071, abs=1e-4),
                                          "seed": pytest.approx(0.7071, abs=1e-4)}
-        assert set(first["evidence"]) == {"query", "seed", "blend"}
+        assert {"query", "seed", "blend", "diversity"} <= set(first["evidence"])
 
     def test_default_artist_cap_applies(self, catalog):
         crowded = dataclasses.replace(catalog, metadata={
@@ -205,3 +207,84 @@ class TestPreviews:
             assert served.content == b"ID3fake"
             assert served.headers["content-type"] == "audio/mpeg"
             assert c.get("/audio/b").status_code == 404
+
+
+class SpyRerank:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, catalog, ranked, *, k, lambda_):
+        self.calls.append({"pool": [r.track_id for r in ranked], "k": k, "lambda": lambda_})
+        return diversity.mmr_rerank(catalog, ranked, k=k, lambda_=lambda_)
+
+
+def wide_catalog(n=12):
+    """n tracks fanning away from [1,0,0,0], each by its own artist."""
+    return make_catalog([
+        (f"t{i:02d}", f"artist-{i}", [np.cos(i * 0.12), np.sin(i * 0.12), 0.0, 0.0])
+        for i in range(n)
+    ])
+
+
+class Between:
+    """Encodes every text halfway between the first two axes."""
+
+    space = SPACE_4D
+
+    def embed_text(self, texts):
+        return np.array([[0.7071, 0.7071, 0.0, 0.0]] * len(texts), dtype=np.float32)
+
+
+class TestRerankIsWired:
+    @pytest.mark.parametrize("payload", [
+        {"query": "toward a", "k": 3},
+        {"seed": {"providerId": "t00"}, "k": 3},
+        {"query": "toward a", "seed": {"providerId": "t05"}, "k": 3},
+    ])
+    def test_every_mode_reranks_a_pool_larger_than_k(self, monkeypatch, payload):
+        spy = SpyRerank()
+        monkeypatch.setattr(service_module, "mmr_rerank", spy)
+        with TestClient(create_app(Recommender(wide_catalog(), None, StubEncoder()))) as c:
+            response = c.post("/recommendations", json=payload)
+        assert response.status_code == 200
+        assert len(spy.calls) == 1
+        assert spy.calls[0]["k"] == 3
+        expected_pool = 11 if "seed" in payload else 12  # the seed is never a candidate
+        assert len(spy.calls[0]["pool"]) == expected_pool
+        assert ids(response)[0] == spy.calls[0]["pool"][0]  # best match stays first
+
+    def test_pool_is_capped_at_the_candidate_pool(self, monkeypatch):
+        spy = SpyRerank()
+        monkeypatch.setattr(service_module, "mmr_rerank", spy)
+        with TestClient(create_app(Recommender(wide_catalog(60), None, StubEncoder()))) as c:
+            c.post("/recommendations", json={"query": "toward a", "k": 5, "max_per_artist": None})
+        assert len(spy.calls[0]["pool"]) == service_module.CANDIDATE_POOL
+
+    def test_near_copy_gives_way_to_a_distinct_match(self):
+        catalog = make_catalog([
+            ("a1", "artist-1", [1.0, 0.20, 0.0, 0.0]),
+            ("a2", "artist-2", [1.0, 0.19, 0.0, 0.0]),
+            ("b1", "artist-3", [0.15, 1.0, 0.0, 0.0]),
+            ("f", "artist-4", [0.0, 0.0, 1.0, 0.0]),
+        ])
+        with TestClient(create_app(Recommender(catalog, None, Between()))) as c:
+            body = c.post("/recommendations", json={"query": "x", "k": 3}).json()
+        assert [r["providerId"] for r in body["results"]] == ["a1", "b1", "a2"]
+        b1 = body["results"][1]
+        assert b1["evidence"]["match"]["rank"] == 3          # similarity rank kept
+        assert b1["evidence"]["diversity"]["position"] == 2
+        assert b1["score"] == pytest.approx(b1["similarities"]["query"], abs=1e-4)
+
+    def test_too_few_candidates_returns_what_exists(self, client):
+        response = client.post("/recommendations", json={"query": "toward a", "k": 10})
+        assert sorted(ids(response)) == ["a", "b", "c", "d"]
+        only_one = client.post("/recommendations", json={
+            "query": "toward a", "filters": {"genre": "rock"}, "k": 5})
+        assert ids(only_one) == ["d"]
+
+    def test_lambda_one_restores_plain_similarity_order(self):
+        rec = Recommender(wide_catalog(), None, StubEncoder(), diversity=1.0)
+        with TestClient(create_app(rec)) as c:
+            response = c.post("/recommendations",
+                              json={"query": "toward a", "k": 5, "max_per_artist": None})
+        assert ids(response) == ["t00", "t01", "t02", "t03", "t04"]

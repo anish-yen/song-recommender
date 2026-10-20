@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from recommendation_engine.attributes import LABELS, load_attributes
+from recommendation_engine.diversity import DEFAULT_LAMBDA, DEFAULT_POOL, mmr_rerank
 from recommendation_engine.errors import IndexCorruptError, RecommenderError
 from recommendation_engine.evidence import (
     explained_search,
@@ -33,6 +34,8 @@ MAX_K = 50
 #: Longest query accepted. CLAP's text tower truncates long input anyway, and the
 #: frontend already cuts at 400 characters.
 MAX_QUERY_CHARS = 400
+#: Candidates retrieved per request before the diversity rerank picks ``k``.
+CANDIDATE_POOL = DEFAULT_POOL
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,10 +69,13 @@ def _zscore(values: np.ndarray) -> np.ndarray:
 class Recommender:
     """One catalog plus one encoder, shared by every request in the process."""
 
-    def __init__(self, catalog: Catalog, attributes, encoder) -> None:
+    def __init__(self, catalog: Catalog, attributes, encoder, *,
+                 diversity: float = DEFAULT_LAMBDA) -> None:
         self.catalog = catalog
         self.attributes = attributes
         self.encoder = encoder
+        #: MMR weight on relevance; 1.0 switches the diversity rerank off.
+        self.diversity = diversity
         # Torch modules are not documented as safe for concurrent forward passes;
         # text encoding is ~15 ms, so serialising it costs little.
         self._encode_lock = threading.Lock()
@@ -178,26 +184,39 @@ class Recommender:
         if seed_id:
             self.catalog.position_of(seed_id)  # 404 before any encoding work
 
+        # Retrieve a pool, then let the diversity rerank choose the final ``k``.
+        pool_k = max(k, CANDIDATE_POOL)
         if query and seed_id:
-            return self._blend(query, seed_id, filters, k, max_per_artist)
+            return self._blend(query, seed_id, filters, k, pool_k, max_per_artist)
         if seed_id:
             out = explained_similar(self.catalog, seed_id, attributes=self.attributes,
-                                    filters=filters, k=k, max_per_artist=max_per_artist)
+                                    filters=filters, k=pool_k, max_per_artist=max_per_artist)
             path = "seed"
         else:
             out = explained_search(self.catalog, self.encode(query), query_text=query,
-                                   attributes=self.attributes, filters=filters, k=k,
+                                   attributes=self.attributes, filters=filters, k=pool_k,
                                    query_space=self.encoder.space, max_per_artist=max_per_artist)
             path = "query"
         results = [
             Ranked(r.track_id, self.catalog.metadata[r.track_id], r.similarity,
                    {path: r.similarity}, short_reason(r.evidence), r.evidence)
-            for r in out.results
+            for r in self._rerank(out.results, k)
         ]
         return Answer("similar" if seed_id else "search", results,
                       out.hidden_mismatch, out.hidden_unknown)
 
-    def _blend(self, query, seed_id, filters, k, max_per_artist) -> Answer:
+    def _rerank(self, pool: list, k: int) -> list:
+        """Pick ``k`` of ``pool`` with MMR; similarity ranks and scores are untouched."""
+        picked = mmr_rerank(self.catalog, pool, k=k, lambda_=self.diversity)
+        rank_of = {r.track_id: i for i, r in enumerate(pool, start=1)}
+        return [
+            dataclasses.replace(r, evidence={**r.evidence, "diversity": {
+                "method": "mmr", "lambda": self.diversity, "pool": len(pool),
+                "similarity_rank": rank_of[r.track_id], "position": position}})
+            for position, r in enumerate(picked, start=1)
+        ]
+
+    def _blend(self, query, seed_id, filters, k, pool_k, max_per_artist) -> Answer:
         """Query and seed together: sum of each path's z-scored cosine.
 
         Raw cosines are not comparable across paths (text-to-audio scores sit near
@@ -221,8 +240,9 @@ class Recommender:
             excluded = outcome.excluded
             hidden_mismatch = len(outcome.mismatched - {seed_id})
             hidden_unknown = len(outcome.unknown - {seed_id})
-        ranked = rank_by_score(catalog, blended, k=k, exclude=excluded | {seed_id},
-                               max_per_artist=max_per_artist)
+        pool = rank_by_score(catalog, blended, k=pool_k, exclude=excluded | {seed_id},
+                             max_per_artist=max_per_artist)
+        ranked = self._rerank(pool, k)
 
         # Evidence for the chosen tracks, from each path's own explainer.
         everyone = len(catalog)
@@ -236,7 +256,8 @@ class Recommender:
         results = []
         for rec in ranked:
             evidence = {"query": q_ev.get(rec.track_id, {}), "seed": s_ev.get(rec.track_id, {}),
-                        "blend": {"method": "sum of z-scored cosines", "weights": [1, 1]}}
+                        "blend": {"method": "sum of z-scored cosines", "weights": [1, 1]},
+                        "diversity": rec.evidence["diversity"]}
             parts = [short_reason(e) for e in (evidence["query"], evidence["seed"]) if e]
             why = " · ".join(parts[:1] + [p[:1].lower() + p[1:] for p in parts[1:]])
             i = position[rec.track_id]
