@@ -36,6 +36,9 @@ MAX_K = 50
 MAX_QUERY_CHARS = 400
 #: Candidates retrieved per request before the diversity rerank picks ``k``.
 CANDIDATE_POOL = DEFAULT_POOL
+#: Weight of each path's z-scored cosine when a query and a seed arrive together.
+#: Equal weighting is a starting guess, not a tuned value.
+BLEND_WEIGHTS = {"query": 1.0, "seed": 1.0}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -221,13 +224,18 @@ class Recommender:
 
         Raw cosines are not comparable across paths (text-to-audio scores sit near
         0.1-0.35, audio-to-audio near 0.4-0.9), so each is standardised over the
-        catalog first. Equal weighting is a starting guess, not a tuned value.
+        catalog first, then summed with ``BLEND_WEIGHTS``.
+
+        Each result's ``evidence["match"]`` reports its blended rank and its rank on
+        each path alone, counted among the tracks that could be returned (filters
+        applied, seed excluded), so the explanation can say what put it there.
         """
         catalog = self.catalog
         query_vector = self.encode(query)
         q_scores = cosine_scores(query_vector, catalog.vectors)
         s_scores = cosine_scores(catalog.vector_of(seed_id), catalog.vectors)
-        blended = _zscore(q_scores) + _zscore(s_scores)
+        blended = (BLEND_WEIGHTS["query"] * _zscore(q_scores)
+                   + BLEND_WEIGHTS["seed"] * _zscore(s_scores))
 
         excluded: frozenset[str] = frozenset()
         hidden_mismatch = hidden_unknown = 0
@@ -252,13 +260,33 @@ class Recommender:
         s_ev = {r.track_id: r.evidence for r in explained_similar(
             catalog, seed_id, attributes=self.attributes, filters=filters, k=everyone).results}
         position = {t: i for i, t in enumerate(catalog.track_ids)}
+        candidates = [t for t in catalog.track_ids if t not in excluded and t != seed_id]
+
+        def path_ranks(scores: np.ndarray) -> dict[str, int]:
+            order = sorted(candidates, key=lambda t: (-float(scores[position[t]]), t))
+            return {t: rank for rank, t in enumerate(order, start=1)}
+
+        q_rank, s_rank = path_ranks(q_scores), path_ranks(s_scores)
+        seed_title = str(catalog.metadata[seed_id].get("title", seed_id))
 
         results = []
         for rec in ranked:
-            evidence = {"query": q_ev.get(rec.track_id, {}), "seed": s_ev.get(rec.track_id, {}),
-                        "blend": {"method": "sum of z-scored cosines", "weights": [1, 1]},
-                        "diversity": rec.evidence["diversity"]}
-            parts = [short_reason(e) for e in (evidence["query"], evidence["seed"]) if e]
+            q, s = q_ev.get(rec.track_id, {}), s_ev.get(rec.track_id, {})
+            evidence = {
+                "match": {"kind": "blend", "rank": rec.evidence["diversity"]["similarity_rank"],
+                          "of": len(candidates), "query": query,
+                          "query_rank": q_rank[rec.track_id], "seed_track_id": seed_id,
+                          "seed_title": seed_title, "seed_rank": s_rank[rec.track_id]},
+                # Attributes describe the track, not the path: take them from the query
+                # path (same filters), and seed agreement from the seed path.
+                **{key: q[key] for key in ("filters_passed", "query_agreement",
+                                           "estimates", "measured") if key in q},
+                **({"shared_with_seed": s["shared_with_seed"]} if "shared_with_seed" in s else {}),
+                "diversity": rec.evidence["diversity"],
+                "query": q, "seed": s,
+                "blend": {"method": "sum of z-scored cosines", "weights": BLEND_WEIGHTS},
+            }
+            parts = [short_reason(e) for e in (q, s) if e]
             why = " · ".join(parts[:1] + [p[:1].lower() + p[1:] for p in parts[1:]])
             i = position[rec.track_id]
             results.append(Ranked(
