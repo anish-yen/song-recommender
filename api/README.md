@@ -35,7 +35,14 @@ If the index is missing, the service still starts and answers `503` with the rea
 **Which path runs.** Query only → mood search. Seed only → similar songs (seed excluded).
 Both → **blend**: each path's cosine is z-scored over the catalog and the two are summed.
 Raw cosines are not comparable across paths (text→audio ≈ 0.1–0.35, audio→audio ≈ 0.4–0.9),
-which is why they are standardised first. Equal weights are a starting guess, not tuned.
+which is why they are standardised first. The weights live in `service.BLEND_WEIGHTS`; equal
+weights are a starting guess, not tuned (on FMA-small they let the seed dominate).
+
+**Diversity rerank.** Every path retrieves `max(k, 50)` candidates (after filters and the artist
+cap), then MMR (`recommendation_engine/diversity.py`) picks `k`, trading relevance against
+sounding like a track already picked. Relevance is rescaled within the pool so the weight means
+the same in every mode. Scores and similarity ranks are never changed; `evidence.diversity`
+records each result's `similarity_rank` and final `position`.
 
 **Seed.** `{"providerId": "<track_id>"}` from the picker, or `{"title": ...}`, which must match
 exactly one catalog title (otherwise 404, "pick the seed from the suggestions").
@@ -58,7 +65,7 @@ having no estimate. `/recommendations` caps results at 2 per artist unless
     "providerUrl": "http://freemusicarchive.org/music/AWOL/…",
     "previewUrl": "http://localhost:8000/audio/fma-000002",
     "source": "FMA …; genre_top=Hip-Hop", "license": "Attribution-NonCommercial-ShareAlike…",
-    "why": "Matches \"hip hop\" in your search (model estimate) · closest sound match to …",
+    "why": "Matches \"hip hop\" in your search (model estimate) · #1 of 7,993 for \"…\" · estimated vocal · 92 BPM, high energy for this catalog (measured)",
     "score": 0.35, "similarities": { "query": 0.35 },
     "evidence": { "match": { … }, "estimates": { … }, "measured": { … } }
   }]
@@ -68,7 +75,10 @@ having no estimate. `/recommendations` caps results at 2 per artist unless
 `score` is what the list was ranked on: a cosine in `[-1, 1]` for one path, a z-score sum
 for a blend. **It is a ranking score, not a percentage** — order by it, never display it as
 "35% match". `why` is built only from the actual match, filters that kept the track, and
-labelled model estimates/measurements (see `recommendation_engine/evidence.py`). `evidence`
+labelled model estimates/measurements (see `recommendation_engine/evidence.py`): the strongest
+true reason, the rank the similarity gave the track (both path ranks for a blend), "chosen for
+variety" when the rerank moved it above closer matches, then its own known attributes.
+Attributes the track does not have are never mentioned. `evidence`
 is the full structure behind it, for a debug view.
 
 ## Errors

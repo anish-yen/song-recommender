@@ -220,25 +220,56 @@ class TestShortReason:
         out = explained_search(catalog, QUERY, query_text="calm", attributes=ATTRS,
                                filters=AttributeFilters(vocals="instrumental"), k=1)
         assert short_reason(out.results[0].evidence) == (
-            'Instrumental (model estimate) · closest sound match to "calm"'
+            'Instrumental (model estimate) · #1 of 2 for "calm" · '
+            'estimated calm · 124 BPM, medium energy for this catalog (measured)'
         )
 
     def test_query_agreement_next(self, catalog):
         out = explained_search(catalog, QUERY, query_text="relaxing", attributes=ATTRS, k=1)
         assert short_reason(out.results[0].evidence) == (
-            'Matches "relaxing" (calm) in your search (model estimate) · '
-            'closest sound match to "relaxing"'
+            'Matches "relaxing" (calm) in your search (model estimate) · #1 of 4 for "relaxing" · '
+            'estimated vocal, jazz · 120 BPM, low energy for this catalog (measured)'
         )
 
     def test_similar_songs_name_what_they_share(self, catalog):
         out = explained_similar(catalog, "a", attributes=ATTRS, k=2)
         assert short_reason(out.results[1].evidence) == (
-            "Sounds like Title a · both calm (model estimates) · similar tempo"
+            "Both calm (model estimates), similar tempo · #2 of 3 closest in sound to Title a · "
+            "estimated instrumental · medium energy for this catalog (measured)"
         )
 
     def test_otherwise_only_the_match(self, catalog):
         out = explained_search(catalog, QUERY, query_text="q", attributes=None, k=1)
-        assert short_reason(out.results[0].evidence) == 'Closest sound match to "q"'
+        assert short_reason(out.results[0].evidence) == '#1 of 4 for "q"'
+
+
+class TestWhyIsHonest:
+    def test_missing_attributes_are_never_mentioned(self, catalog):
+        # c: vocals unknown, no mood, no tempo; only genre and energy are known
+        out = explained_search(catalog, QUERY, query_text="q", attributes=ATTRS, k=2)
+        assert out.results[1].track_id == "c"
+        why = short_reason(out.results[1].evidence)
+        assert "jazz" in why and "high energy" in why
+        for absent in ("BPM", "tempo", "vocal", "instrumental", "calm", "sad"):
+            assert absent not in why
+
+    def test_estimates_and_measurements_are_labelled(self, catalog):
+        why = short_reason(explained_search(catalog, QUERY, query_text="q",
+                                            attributes=ATTRS, k=1).results[0].evidence)
+        assert "estimated vocal, jazz, calm, sad" in why
+        assert "120 BPM, low energy for this catalog (measured)" in why
+
+    def test_each_result_reads_differently(self, catalog):
+        out = explained_search(catalog, QUERY, query_text="q", attributes=ATTRS, k=4)
+        whys = [short_reason(r.evidence) for r in out.results]
+        assert len(set(whys)) == 4
+
+    def test_variety_note_only_when_moved_up(self, catalog):
+        ev = explained_search(catalog, QUERY, query_text="q", attributes=None, k=1).results[0].evidence
+        moved = {**ev, "diversity": {"position": 2, "similarity_rank": 3}}
+        kept = {**ev, "diversity": {"position": 3, "similarity_rank": 2}}
+        assert "chosen for variety" in short_reason(moved)
+        assert "chosen for variety" not in short_reason(kept)
 
 
 VOCAB = {"vocals": ["vocal", "instrumental"], "genre": ["jazz", "rock"],

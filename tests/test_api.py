@@ -80,6 +80,12 @@ class TestRecommendationsContract:
                                          "seed": pytest.approx(0.7071, abs=1e-4)}
         assert {"query", "seed", "blend", "diversity"} <= set(first["evidence"])
 
+    def test_blend_why_names_both_contributions(self, client):
+        body = client.post("/recommendations",
+                           json={"query": "toward a", "seed": {"providerId": "b"}}).json()
+        why = body["results"][0]["why"]
+        assert '#2 for "toward a" and #1 closest to Title b (equal weight)' in why
+
     def test_default_artist_cap_applies(self, catalog):
         crowded = dataclasses.replace(catalog, metadata={
             t: {**m, "artist": "Same Artist"} for t, m in catalog.metadata.items()})

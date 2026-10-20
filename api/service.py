@@ -286,8 +286,7 @@ class Recommender:
                 "query": q, "seed": s,
                 "blend": {"method": "sum of z-scored cosines", "weights": BLEND_WEIGHTS},
             }
-            parts = [short_reason(e) for e in (q, s) if e]
-            why = " · ".join(parts[:1] + [p[:1].lower() + p[1:] for p in parts[1:]])
+            why = short_reason(evidence)
             i = position[rec.track_id]
             results.append(Ranked(
                 rec.track_id, catalog.metadata[rec.track_id], rec.similarity,

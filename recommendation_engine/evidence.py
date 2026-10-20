@@ -359,38 +359,74 @@ def _capitalize(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
-def short_reason(evidence: dict[str, object]) -> str:
-    """One line per result: the strongest true statement, in priority order.
-
-    1. filters the user applied that kept the track;
-    2. search words the tagger agrees with;
-    3. attributes a similar song shares with its seed;
-    4. otherwise, the similarity match alone.
-    The similarity anchor ("closest sound match to ..." / "sounds like ...") is
-    always included, because it is the actual ranking criterion.
-    """
-    match = evidence["match"]
+def _anchor(match: dict[str, object]) -> str:
+    """The actual ranking contribution: where the similarity put this track."""
     if match["kind"] == "query":
-        anchor = f"closest sound match to \"{match['query']}\""
-    else:
-        anchor = f"sounds like {match['seed_title']}"
+        return f"#{match['rank']} of {match['of']:,} for \"{match['query']}\""
+    if match["kind"] == "seed":
+        return f"#{match['rank']} of {match['of']:,} closest in sound to {match['seed_title']}"
+    return (f"#{match['query_rank']} for \"{match['query']}\" and "
+            f"#{match['seed_rank']} closest to {match['seed_title']} (equal weight)")
 
+
+def _lead(evidence: dict[str, object]) -> tuple[str | None, set[str]]:
+    """The strongest true statement, and which attributes it already names.
+
+    Priority: filters the user applied that kept the track; search words the
+    tagger agrees with; attributes a similar song shares with its seed.
+    """
     if "filters_passed" in evidence:
-        filters = ", ".join(_describe_filter(e) for e in evidence["filters_passed"])
-        return _capitalize(f"{filters} · {anchor}")
+        entries = evidence["filters_passed"]
+        named = {"tempo_bpm" if e["attribute"] == "tempo" else e["attribute"] for e in entries}
+        return ", ".join(_describe_filter(e) for e in entries), named
     if "query_agreement" in evidence:
-        terms = ", ".join(_describe_term(t) for t in evidence["query_agreement"]["terms"])
-        return _capitalize(f"matches {terms} in your search (model estimate) · {anchor}")
+        terms = evidence["query_agreement"]["terms"]
+        return (f"matches {', '.join(_describe_term(t) for t in terms)} in your search "
+                "(model estimate)", {t["attribute"] for t in terms})
     shared = evidence.get("shared_with_seed")
     if shared:
-        parts = [anchor]
+        parts, named = [], set()
         if "estimates" in shared:
             parts.append("both " + ", ".join(_describe_estimates(shared["estimates"]))
                          + " (model estimates)")
+            named |= set(shared["estimates"]) - {"kind"}
         measured = shared.get("measured", {})
         if "tempo_bpm" in measured:
             parts.append("similar tempo")
+            named.add("tempo_bpm")
         if "energy" in measured:
             parts.append(f"both {measured['energy']} energy")
-        return _capitalize(" · ".join(parts))
-    return _capitalize(anchor)
+            named.add("energy")
+        return ", ".join(parts), named
+    return None, set()
+
+
+def _own_facts(evidence: dict[str, object], skip: set[str]) -> list[str]:
+    """This track's known attributes not already stated; unknown ones never appear."""
+    est = {k: v for k, v in evidence.get("estimates", {}).items() if k != "kind" and k not in skip}
+    meas = {k: v for k, v in evidence.get("measured", {}).items() if k != "kind" and k not in skip}
+    facts = []
+    if _describe_estimates(est):
+        facts.append("estimated " + ", ".join(_describe_estimates(est)))
+    if _describe_measured(meas):
+        facts.append(", ".join(_describe_measured(meas)) + " (measured)")
+    return facts
+
+
+def short_reason(evidence: dict[str, object]) -> str:
+    """One specific line per result, every clause a measured or estimated fact.
+
+    1. the lead: filters that kept the track, else search words the tagger agrees
+       with, else attributes shared with the seed;
+    2. the anchor: the rank the similarity gave this track (both ranks for a blend),
+       always present because it is the actual ranking criterion;
+    3. "chosen for variety" when the diversity rerank moved it above closer matches;
+    4. the track's own known attributes, estimates and measurements labelled apart.
+    """
+    lead, named = _lead(evidence)
+    parts = [p for p in (lead, _anchor(evidence["match"])) if p]
+    moved = evidence.get("diversity")
+    if moved and moved["position"] < moved["similarity_rank"]:
+        parts.append("chosen for variety")
+    parts += _own_facts(evidence, named)
+    return _capitalize(" · ".join(parts))
