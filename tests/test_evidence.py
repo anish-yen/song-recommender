@@ -98,6 +98,42 @@ class TestFilters:
         assert energy_band(percentile) == band
 
 
+class TestFilterBoundaries:
+    @pytest.mark.parametrize("filters, passes", [
+        (AttributeFilters(tempo_min=120.0), True),
+        (AttributeFilters(tempo_max=120.0), True),
+        (AttributeFilters(tempo_min=120.0, tempo_max=120.0), True),
+        (AttributeFilters(tempo_min=120.01), False),
+        (AttributeFilters(tempo_max=119.99), False),
+    ])
+    def test_tempo_bounds_are_inclusive(self, filters, passes):
+        outcome = apply_filters(["a"], {"a": ATTRS["a"]}, filters)  # a: 120 BPM
+        assert ("a" in outcome.passed) is passes
+
+    @pytest.mark.parametrize("bpm", [30.0, 300.0])
+    def test_tempo_limits_themselves_are_accepted(self, bpm):
+        AttributeFilters(tempo_min=bpm).validate()
+
+    @pytest.mark.parametrize("bpm", [29.99, 300.01])
+    def test_tempo_just_outside_the_limits_is_rejected(self, bpm):
+        with pytest.raises(ValueError):
+            AttributeFilters(tempo_max=bpm).validate()
+
+    @pytest.mark.parametrize("percentile, low, medium", [
+        (1 / 3 - 1e-9, True, False), (1 / 3, False, True),
+    ])
+    def test_energy_band_edges(self, percentile, low, medium):
+        attrs = {"x": track("vocal", "jazz", percentile, 100.0)}
+        assert ("x" in apply_filters(["x"], attrs, AttributeFilters(energy="low")).passed) is low
+        assert ("x" in apply_filters(["x"], attrs, AttributeFilters(energy="medium")).passed) is medium
+
+    def test_mood_filter_passes_any_detected_mood_and_hides_undetected_as_unknown(self):
+        outcome = apply_filters(list(ATTRS), ATTRS, AttributeFilters(mood="sad"))
+        assert set(outcome.passed) == {"a"}
+        assert outcome.unknown == {"c"}
+        assert outcome.mismatched == {"b", "d"}
+
+
 class TestExplainedSearch:
     def test_filters_apply_before_the_k_cut(self, catalog):
         out = explained_search(catalog, QUERY, query_text="q", attributes=ATTRS,

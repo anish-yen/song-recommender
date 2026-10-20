@@ -294,3 +294,44 @@ class TestRerankIsWired:
             response = c.post("/recommendations",
                               json={"query": "toward a", "k": 5, "max_per_artist": None})
         assert ids(response) == ["t00", "t01", "t02", "t03", "t04"]
+
+
+def satisfies(track_id, filters, attrs):
+    from recommendation_engine.filters import AttributeFilters, apply_filters
+    return track_id in apply_filters([track_id], attrs, AttributeFilters(**filters)).passed
+
+
+SEED_D = {"providerId": "d", "title": "Title d", "artist": "Artist Three"}
+
+
+class TestFiltersThroughTheApi:
+    EMPTY = TestDiscoverPagePayload.EMPTY
+
+    @pytest.mark.parametrize("filters", [
+        {"mood": "calm"}, {"energy": "low"}, {"tempo_min": "100", "tempo_max": "122"},
+        {"mood": "calm", "energy": "medium"},
+    ])
+    @pytest.mark.parametrize("extra", [
+        {"query": "toward a"}, {"seed": SEED_D}, {"query": "toward a", "seed": SEED_D},
+    ])
+    def test_every_result_satisfies_every_active_filter(self, client, filters, extra):
+        payload = {**extra, "filters": {**self.EMPTY, **filters}, "k": 5}
+        response = client.post("/recommendations", json=payload)
+        assert response.status_code == 200
+        numeric = {k: (float(v) if k.startswith("tempo") else v) for k, v in filters.items()}
+        results = response.json()["results"]
+        assert results, "each case leaves at least one matching track"
+        for result in results:
+            assert satisfies(result["providerId"], numeric, ATTRS)
+
+    @pytest.mark.parametrize("tempo, status", [("30", 200), ("300", 200), ("29", 422), ("301", 422)])
+    def test_tempo_limits_from_the_page(self, client, tempo, status):
+        payload = {"query": "toward a", "filters": {**self.EMPTY, "tempo_min": tempo}, "k": 5}
+        assert client.post("/recommendations", json=payload).status_code == status
+
+    def test_filters_without_attributes_are_refused(self, catalog):
+        with TestClient(create_app(Recommender(catalog, None, StubEncoder()))) as c:
+            response = c.post("/recommendations",
+                              json={"query": "toward a", "filters": {**self.EMPTY, "mood": "calm"}})
+        assert response.status_code == 422
+        assert "attributes" in response.json()["detail"]
