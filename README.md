@@ -42,7 +42,8 @@ uv sync && npm install && npx prisma generate
 uv run python -m ingestion.fma --metadata data/audio/fma/fma_metadata \
     --audio data/audio/fma/fma_small --per-genre 5 --out data/manifest.json
 
-# 2. Index: CLAP vectors (~780 MB model download once), then attributes (~350 MB once)
+# 2. Index: CLAP vectors (~780 MB model download once), then attributes (~350 MB once).
+#    Query interpretation downloads a small sentence model (~90 MB) on first use.
 uv run python -m recommendation_engine.demo build-index --manifest data/manifest.json
 uv run python -m recommendation_engine.attributes
 
@@ -75,9 +76,11 @@ guitar") return the expected genres, a seed's top 5 share its FMA genre 38% of t
 graded by listeners** — follow the [evaluation guide](recommendation_engine/EVALUATION.md)
 before claiming it. Known weaknesses: on 40 tracks a few "hub" tracks topped unrelated queries
 (gone at 800 tracks: 16 genre queries, 16 different #1s); words like "without" are not enforced
-(use the vocals filter); and activity words like "gym" or "study" barely affect results because
-CLAP understands sounds, not activities — use the Energy filter until the
-[P1 activity auto-filter](recommendation_engine/PLAN.md#p1-activity-auto-filter) lands.
+(use the vocals filter); and CLAP understands sounds, not situations, so "music for the gym" on
+its own barely moves the ranking. The `feature/query-space-mapping` branch reads each search
+from the most similar searches a local language model labelled offline, into a sound plus
+energy and tempo **boosts** shown as removable chips; ~5 ms a search, no GPU
+([results and limits](recommendation_engine/PLAN.md#query-interpretation-general--constrained-query-space)).
 [REVIEW.md](REVIEW.md) tracks architectural findings; R3 and R5 remain open.
 
 ## Working agreements

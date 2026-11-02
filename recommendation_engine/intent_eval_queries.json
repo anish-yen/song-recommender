@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "Fixed evaluation set for query interpretation (design doc: write the test queries",
+    "before tuning, so the team does not change the test every time). Written on",
+    "2026-11-01 before any interpretation code ran. Do not edit to make results look",
+    "better; add a new dated set instead. None of these phrasings may be copied into",
+    "intents.py keywords or examples, or the similarity path is no longer being tested.",
+    "expect: high | low = the energy band an activity implies; none = nothing should be inferred."
+  ],
+  "queries": [
+    {"query": "music for the gym", "expect": "high"},
+    {"query": "songs to run to", "expect": "high"},
+    {"query": "workout playlist", "expect": "high"},
+    {"query": "lifting heavy weights", "expect": "high"},
+    {"query": "crossfit session", "expect": "high"},
+    {"query": "spin class", "expect": "high"},
+    {"query": "dance floor bangers", "expect": "high"},
+    {"query": "pump up music before a game", "expect": "high"},
+    {"query": "hiit intervals", "expect": "high"},
+    {"query": "house party tonight", "expect": "high"},
+
+    {"query": "music for studying", "expect": "low"},
+    {"query": "focus while coding", "expect": "low"},
+    {"query": "background music for reading", "expect": "low"},
+    {"query": "sleep music", "expect": "low"},
+    {"query": "falling asleep", "expect": "low"},
+    {"query": "meditation", "expect": "low"},
+    {"query": "yoga session", "expect": "low"},
+    {"query": "quiet music for homework", "expect": "low"},
+    {"query": "late night studying", "expect": "low"},
+    {"query": "winding down before bed", "expect": "low"},
+
+    {"query": "sad acoustic guitar", "expect": "none"},
+    {"query": "hip hop with rap vocals", "expect": "none"},
+    {"query": "jazz piano trio", "expect": "none"},
+    {"query": "dark ambient drones", "expect": "none"},
+    {"query": "upbeat pop with female vocals", "expect": "none"},
+    {"query": "not for the gym, something mellow", "expect": "none"}
+  ]
+}

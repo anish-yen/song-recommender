@@ -6,6 +6,9 @@ Environment:
     INDEX_DIR        index built by ``recommendation_engine.demo build-index`` (default .index)
     DEVICE           cpu (default), mps, cuda, or auto — for query text encoding
     PUBLIC_API_URL   base URL for preview links (default: the URL the request arrived on)
+    QUERY_INTERPRETATION  on (default) or off — read situations like "gym" as a
+                     sound plus energy and tempo boosts, from the most similar of
+                     ~2,200 searches a language model labelled offline (``intents.py``)
 
 The model is loaded once at startup, and every route is a plain ``def``: FastAPI
 runs those in a worker thread, so CPU-bound encoding never blocks the event loop.
@@ -31,6 +34,7 @@ from recommendation_engine.errors import (
     UnknownTrackError,
 )
 from recommendation_engine.filters import AttributeFilters
+from recommendation_engine.intents import PARTS
 
 from .service import MAX_K, MAX_QUERY_CHARS, Answer, Ranked, Recommender
 
@@ -58,11 +62,30 @@ class Filters(BaseModel):
         return AttributeFilters(**self.model_dump())
 
 
-class SearchRequest(BaseModel):
+class Interpretation(BaseModel):
+    """How much of the query interpretation to use (see ``intents.py``)."""
+
+    #: False sends the query to CLAP exactly as typed.
+    infer: bool = True
+    #: Parts to switch off individually, e.g. after the user removes a chip.
+    ignore_inferred: list[str] = []
+
+    @field_validator("ignore_inferred")
+    @classmethod
+    def _known_parts(cls, value):
+        unknown = set(value) - set(PARTS)
+        if unknown:
+            raise ValueError(f"cannot ignore {sorted(unknown)}; choose from {', '.join(PARTS)}")
+        return value
+
+
+class SearchRequest(Interpretation):
     query: str = Field(min_length=1, max_length=MAX_QUERY_CHARS)
     k: int = Field(default=10, ge=1, le=MAX_K)
     max_per_artist: int | None = Field(default=None, ge=1)
     filters: Filters = Filters()
+    #: True keeps weak matches in a text search, marked, instead of hiding them.
+    show_weak: bool = False
 
 
 class Seed(BaseModel):
@@ -71,7 +94,7 @@ class Seed(BaseModel):
     artist: str | None = None
 
 
-class RecommendationRequest(BaseModel):
+class RecommendationRequest(Interpretation):
     """The frontend's contract (``src/lib/recommendation-client.js``)."""
 
     query: str = Field(default="", max_length=MAX_QUERY_CHARS)
@@ -79,6 +102,7 @@ class RecommendationRequest(BaseModel):
     filters: Filters = Filters()
     k: int = Field(default=10, ge=1, le=MAX_K)
     max_per_artist: int | None = Field(default=DEFAULT_MAX_PER_ARTIST, ge=1)
+    show_weak: bool = False
 
 
 def _status_for(exc: Exception) -> int:
@@ -106,6 +130,7 @@ def create_app(recommender: Recommender | None = None) -> FastAPI:
                 app.state.recommender = Recommender.from_index(
                     os.environ.get("INDEX_DIR", ".index"),
                     device=os.environ.get("DEVICE", "cpu"),
+                    interpret=os.environ.get("QUERY_INTERPRETATION", "on") != "off",
                 )
             except RecommenderError as exc:
                 # Stay up and answer 503 with the reason, rather than crash-looping.
@@ -156,7 +181,9 @@ def create_app(recommender: Recommender | None = None) -> FastAPI:
             "queryId": uuid.uuid4().hex,
             "mode": answer.mode,
             "results": [result_json(request, rec, r) for r in answer.results],
-            "hidden": {"mismatch": answer.hidden_mismatch, "unknown": answer.hidden_unknown},
+            "hidden": {"mismatch": answer.hidden_mismatch, "unknown": answer.hidden_unknown,
+                       "weak": answer.hidden_weak},
+            "interpreted": answer.interpreted,
             "elapsedMs": round((time.perf_counter() - started) * 1000, 1),
         }
 
@@ -199,7 +226,8 @@ def create_app(recommender: Recommender | None = None) -> FastAPI:
         started = time.perf_counter()
         rec = service(request)
         answer = call(rec.recommend, query=body.query, filters=body.filters.engine(),
-                      k=body.k, max_per_artist=body.max_per_artist)
+                      k=body.k, max_per_artist=body.max_per_artist, infer=body.infer,
+                      ignore_inferred=tuple(body.ignore_inferred), show_weak=body.show_weak)
         return answer_json(request, rec, answer, started)
 
     @app.get("/similar/{track_id}")
@@ -226,7 +254,8 @@ def create_app(recommender: Recommender | None = None) -> FastAPI:
             seed_id = call(resolve_seed, rec, body.seed)
         answer = call(rec.recommend, query=body.query, seed_id=seed_id,
                       filters=body.filters.engine(), k=body.k,
-                      max_per_artist=body.max_per_artist)
+                      max_per_artist=body.max_per_artist, infer=body.infer,
+                      ignore_inferred=tuple(body.ignore_inferred), show_weak=body.show_weak)
         return answer_json(request, rec, answer, started)
 
     return app

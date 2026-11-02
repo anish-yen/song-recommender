@@ -1,10 +1,11 @@
 """The logic behind the HTTP routes, with no HTTP in it.
 
-``Recommender`` holds one loaded catalog, its attribute estimates, and one text
-encoder, and answers the three questions the frontend asks: mood search, similar
-songs, and the two combined. Everything ranking-related is delegated to
-``recommendation_engine``; this module only chooses the path, blends scores when a
-query and a seed arrive together, and shapes results for the frontend.
+``Recommender`` holds one loaded catalog, its attribute estimates, one text
+encoder, and an optional query interpreter, and answers the three questions the
+frontend asks: mood search, similar songs, and the two combined. Everything
+ranking-related is delegated to ``recommendation_engine``; this module only reads
+the query (``intents.py``), chooses the path, blends scores when a query and a seed
+arrive together, and shapes results for the frontend.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import numpy as np
 from recommendation_engine.attributes import LABELS, load_attributes
 from recommendation_engine.errors import IndexCorruptError, RecommenderError
 from recommendation_engine.evidence import (
+    MIN_MATCH_Z,
     explained_search,
     explained_similar,
     short_reason,
@@ -25,6 +27,7 @@ from recommendation_engine.evidence import (
     track_measurements,
 )
 from recommendation_engine.filters import ENERGY_BANDS, TEMPO_LIMITS, AttributeFilters, apply_filters
+from recommendation_engine.intents import Applied, QueryInterpreter, read_query
 from recommendation_engine.index import load_index
 from recommendation_engine.similarity import Catalog, cosine_scores, rank_by_score
 
@@ -54,6 +57,9 @@ class Answer:
     results: list[Ranked]
     hidden_mismatch: int = 0
     hidden_unknown: int = 0
+    hidden_weak: int = 0
+    #: What the query was read as (``intents.apply``); empty when nothing was inferred.
+    interpreted: list[dict[str, object]] = dataclasses.field(default_factory=list)
 
 
 def _zscore(values: np.ndarray) -> np.ndarray:
@@ -66,16 +72,25 @@ def _zscore(values: np.ndarray) -> np.ndarray:
 class Recommender:
     """One catalog plus one encoder, shared by every request in the process."""
 
-    def __init__(self, catalog: Catalog, attributes, encoder) -> None:
+    def __init__(self, catalog: Catalog, attributes, encoder, *,
+                 interpreter: QueryInterpreter | None = None,
+                 min_match_z: float | None = None) -> None:
         self.catalog = catalog
         self.attributes = attributes
         self.encoder = encoder
+        #: Reads situations ("gym") as a sound plus energy and tempo boosts; ``None``
+        #: sends every query to CLAP exactly as typed.
+        self.interpreter = interpreter
+        #: Text-search results this far below the catalog's typical match are hidden
+        #: (``evidence.MIN_MATCH_Z``); ``None`` keeps every result.
+        self.min_match_z = min_match_z
         # Torch modules are not documented as safe for concurrent forward passes;
         # text encoding is ~15 ms, so serialising it costs little.
         self._encode_lock = threading.Lock()
 
     @classmethod
-    def from_index(cls, index_dir, *, device: str = "cpu") -> "Recommender":
+    def from_index(cls, index_dir, *, device: str = "cpu",
+                   interpret: bool = True) -> "Recommender":
         catalog = load_index(index_dir)
         try:
             attributes = load_attributes(index_dir, catalog)
@@ -85,10 +100,17 @@ class Recommender:
             attributes = None
         from recommendation_engine.embeddings import ClapEncoder
 
-        recommender = cls(catalog, attributes, ClapEncoder(space=catalog.space, device=device))
+        encoder = ClapEncoder(space=catalog.space, device=device)
+        # Builds its vector cache on the first start (~30 s on CPU), then loads it.
+        interpreter = (QueryInterpreter.load(encoder.embed_text, catalog.space.describe())
+                       if interpret else None)
+        recommender = cls(catalog, attributes, encoder, interpreter=interpreter,
+                          min_match_z=MIN_MATCH_Z)
         # The first forward pass pays one-off setup (~1.4 s measured on CPU); pay it
         # at startup so the first user's search meets the latency target.
         recommender.encode("warm-up")
+        if interpreter is not None:
+            interpreter.interpret("warm-up")
         return recommender
 
     # ------------------------------------------------------------------ lookups
@@ -166,6 +188,9 @@ class Recommender:
         filters: AttributeFilters = AttributeFilters(),
         k: int = 10,
         max_per_artist: int | None = None,
+        infer: bool = True,
+        ignore_inferred: tuple[str, ...] = (),
+        show_weak: bool = False,
     ) -> Answer:
         query = (query or "").strip()
         if not query and not seed_id:
@@ -178,16 +203,35 @@ class Recommender:
         if seed_id:
             self.catalog.position_of(seed_id)  # 404 before any encoding work
 
+        applied = None
+        if query:
+            query_vector, applied = read_query(
+                query, filters, encode=self.encode,
+                interpreter=self.interpreter if infer else None,
+                ignore=tuple(ignore_inferred), measurable=self.attributes is not None)
+        interpreted = applied.interpreted if applied else []
+
         if query and seed_id:
-            return self._blend(query, seed_id, filters, k, max_per_artist)
+            answer = self._blend(query, query_vector, seed_id, filters, k, max_per_artist,
+                                 applied)
+            # Blends use the sound but not the boosts (see ``_blend``): say so.
+            interpreted = [{**e, "status": "unavailable"}
+                           if e["attribute"] in ("energy", "tempo") and e["status"] == "applied"
+                           else e for e in interpreted]
+            return dataclasses.replace(answer, interpreted=interpreted)
         if seed_id:
             out = explained_similar(self.catalog, seed_id, attributes=self.attributes,
                                     filters=filters, k=k, max_per_artist=max_per_artist)
             path = "seed"
         else:
-            out = explained_search(self.catalog, self.encode(query), query_text=query,
-                                   attributes=self.attributes, filters=filters, k=k,
-                                   query_space=self.encoder.space, max_per_artist=max_per_artist)
+            out = explained_search(
+                self.catalog, query_vector, query_text=query, attributes=self.attributes,
+                filters=filters, k=k, query_space=self.encoder.space,
+                max_per_artist=max_per_artist,
+                boosts=applied.boosts if applied else (),
+                similar_to=applied.similar_to if applied else None,
+                min_z=self.min_match_z, hide_weak=not show_weak,
+            )
             path = "query"
         results = [
             Ranked(r.track_id, self.catalog.metadata[r.track_id], r.similarity,
@@ -195,17 +239,22 @@ class Recommender:
             for r in out.results
         ]
         return Answer("similar" if seed_id else "search", results,
-                      out.hidden_mismatch, out.hidden_unknown)
+                      out.hidden_mismatch, out.hidden_unknown,
+                      out.hidden_weak, interpreted)
 
-    def _blend(self, query, seed_id, filters, k, max_per_artist) -> Answer:
+    def _blend(self, query, query_vector, seed_id, filters, k, max_per_artist,
+               applied: Applied | None) -> Answer:
         """Query and seed together: sum of each path's z-scored cosine.
 
         Raw cosines are not comparable across paths (text-to-audio scores sit near
         0.1-0.35, audio-to-audio near 0.4-0.9), so each is standardised over the
         catalog first. Equal weighting is a starting guess, not a tuned value.
+
+        An interpreted query arrives with its sound already blended into
+        ``query_vector``; the energy and tempo boosts are not applied to blends yet
+        (their size is in cosine units, the blend in z-scores).
         """
         catalog = self.catalog
-        query_vector = self.encode(query)
         q_scores = cosine_scores(query_vector, catalog.vectors)
         s_scores = cosine_scores(catalog.vector_of(seed_id), catalog.vectors)
         blended = _zscore(q_scores) + _zscore(s_scores)
@@ -228,7 +277,8 @@ class Recommender:
         everyone = len(catalog)
         q_ev = {r.track_id: r.evidence for r in explained_search(
             catalog, query_vector, query_text=query, attributes=self.attributes,
-            filters=filters, k=everyone, query_space=self.encoder.space).results}
+            filters=filters, k=everyone, query_space=self.encoder.space,
+            similar_to=applied.similar_to if applied else None).results}
         s_ev = {r.track_id: r.evidence for r in explained_similar(
             catalog, seed_id, attributes=self.attributes, filters=filters, k=everyone).results}
         position = {t: i for i, t in enumerate(catalog.track_ids)}

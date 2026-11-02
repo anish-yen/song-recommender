@@ -69,3 +69,26 @@
   font: 0.62rem 'DM Mono', monospace;
   color: #6d746d;
 }
+
+.interpretation-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 1rem;
+}
+
+.inline-action {
+  color: var(--lime);
+  text-decoration: underline;
+  margin-left: 0.4rem;
+  font: inherit;
+}
+
+.interpretation-row .inline-action {
+  font-size: 0.72rem;
+  align-self: center;
+}
+
+.track-row.weak {
+  opacity: 0.55;
+}

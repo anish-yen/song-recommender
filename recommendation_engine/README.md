@@ -25,6 +25,7 @@ Implementation plan and verified constraints: [PLAN.md](PLAN.md).
 | Vocals / genre / mood (AST model estimates), tempo / energy (measured) | implemented ([attributes](#attributes)); checked on the 11-track starter catalog only; mood is the weakest |
 | Vocals / genre / mood / energy / tempo filters | implemented ([filters](#filters-and-reasons)) |
 | A short evidence-based reason for every result | implemented ([reasons](#filters-and-reasons)); **ship only after** an agreement check against labelled tracks |
+| Any search ("gym", "road trip", "rainy day") read into a sound plus energy and tempo boosts | implemented, distilled from a local language model ([query interpretation](#query-interpretation)); on fixed evaluation sets 14/20 activities at the right energy level (none at the opposite one) and 46/46 everyday situations given a sound; FMA ranking and listener checks pending |
 
 ## Running it
 
@@ -53,6 +54,12 @@ uv run python -m recommendation_engine.demo similar <track_id> -k 5 --verbose
 
 # 7. Check attributes against labelled tracks (format: data/labels.example.json)
 uv run python -m recommendation_engine.agreement --labels data/labels.json
+
+# 8. Searches are read from intent_labels.json with a sentence model (~90 MB once; the
+#    first run caches vectors in .cache/intents/, ~20 s). --no-infer sends the text as typed.
+uv run python -m recommendation_engine.demo search "music for the gym" -k 5
+uv run python -m recommendation_engine.demo search "music for the gym" -k 5 --no-infer
+uv run python -m recommendation_engine.intent_eval --index-dir .index
 ```
 
 `--index-dir` relocates the index (default `.index/`), `--device auto` opts in to an
@@ -182,6 +189,11 @@ top-`k` cut, so they never shorten a list that had enough candidates. A track wh
 unknown is hidden, and counted apart from mismatches so the response can say why
 (`hidden_by_filters` in `--json` output).
 
+The API also hides **weak matches** from text searches: results less than one standard deviation
+above the catalog's mean cosine for that query (`explained_search(min_z=MIN_MATCH_Z)`, counted
+in `hidden_weak`). On the 11-track starter catalog that keeps 1–4 of the top 5 (usually 2); on a
+full catalog a top 10 should rarely come near the cut (unmeasured). The CLI shows every result.
+
 `evidence.py` fills `Recommendation.evidence` with structured data, so wording can never drift
 from what was measured:
 
@@ -199,6 +211,7 @@ this order, always ending with the similarity anchor because that is what actual
 | Situation | Example |
 | --- | --- |
 | a filter kept it | `80-110 BPM (measured 96) · closest sound match to "rap with heavy beats"` |
+| a measured value fits the [query interpretation](#query-interpretation) | `Fits your search: high energy, 152 BPM (measured) · closest sound match to "music for the gym", read as similar to "cycling workout music"` |
 | a search word agrees | `Matches "relaxing" (calm) in your search (model estimate) · closest sound match to "relaxing piano"` |
 | similar song with shared attributes | `Sounds like Gymnopedie No 1 · both instrumental, calm, sad (model estimates) · both low energy` |
 | none of the above | `Closest sound match to "late-night beats"` |
@@ -213,6 +226,40 @@ energy) are stated as facts. `summarize(evidence)` gives the full version (`--ve
    Model estimates: vocal · hip hop
    Measured: 99 BPM · high energy for this catalog
 ```
+
+### Query interpretation
+
+CLAP understands sounds, not situations: "music for the gym" barely moved its ranking (on 800
+FMA tracks the gym query correlated −0.04 with measured energy). `intents.py` implements the
+design doc's P0 item "map from general query space to constrained query space".
+
+A language model reads situations well, but `gemma3:4b` costs ~5.5 s a search on a laptop CPU
+and needs Ollama, so its reading is **distilled**. Offline, once, it brainstormed and labelled
+2,159 short searches (`intent_teacher.py` → `intent_labels.json`, committed; phrases copying an
+evaluation query are dropped). At search time a sentence model (`all-MiniLM-L6-v2`, ~5 ms on CPU)
+finds the 15 most similar labelled searches, and:
+
+| Read from the labelled searches | Becomes | Why that strength |
+| --- | --- | --- |
+| the CLAP vectors of their sound descriptions, closest weighted most | blended with the user's words: `unit(query + sound)`; the reason names the closest one ("read as similar to "cycling workout music"") | CLAP matches sounds; the user's own words stay in play |
+| an energy band from a class-weighted classifier, only when ≥ 0.475 sure | **boost** +0.03 cosine for tracks whose measured band matches | at that threshold, opposite-band errors on held-out searches stayed at 1.6–2.8% |
+| the weighted median of their tempo ranges, when most have one | **boost** +0.02 cosine for tracks whose measured BPM is inside it | many tracks have no measurable beat; the ranges are loose |
+
+Boosts reorder, never hide: `similarity` stays the plain cosine, and a track without the
+measurement is neither raised nor removed. A search unlike every labelled one (nearest cosine
+below 0.32; gibberish scores ~0.29) gets no reading. An explicit filter replaces the matching
+boost, and a request can switch interpretation off (`--no-infer`, `infer: false`) or drop one
+part (`ignore_inferred`). Regenerating the labels (`python -m recommendation_engine.intent_teacher`)
+is the only step that needs Ollama.
+
+```
+read as: energy high; tempo 120-160 BPM; sound similar to "cycling workout music"
+ 1. Volatile Reaction — Fits your search: high energy, 152 BPM (measured) · closest sound match to "music for the gym", read as similar to "cycling workout music"
+ 2. Breaking Energy — Fits your search: high energy (measured) · closest sound match to "music for the gym", read as similar to "cycling workout music"
+```
+
+Evaluation results, how the parts were chosen and the ship gate:
+[PLAN.md](PLAN.md#query-interpretation-general--constrained-query-space).
 
 **Query agreement is deliberately simple.** It matches label names and a short synonym list
 (`SYNONYMS` in `evidence.py`: "relaxing" → calm, "rap" → hip hop, "singer" → vocal, …), whole
@@ -247,6 +294,13 @@ fixtures above.
 immutable generation behind an atomic `CURRENT` pointer, and corrupt stored vectors are rejected
 and rebuilt. R3 (enforcing every declared preprocessing label) and R5 (keeping `excerpt_count`
 on reuse) are still open; see [REVIEW.md](../REVIEW.md). Neither can mix up tracks.
+
+**Query interpretation is a distilled approximation.** It reads 14/20 activity queries right
+where the language model it learned from reads 20/20, and its matched searches are only as good
+as the brainstormed labels (some are off-topic, such as "buying a gaming console"). It also reads
+into searches that already describe a sound, which is why everything it says only reorders
+results. Whether the boosts improve real result lists is unmeasured until the FMA ranking check
+and listener grading.
 
 **Free-text exclusions are not enforced.** "Late-night beats *without heavy vocals*" is
 approximate semantic search; the "without" clause does not filter anything (query agreement
@@ -345,6 +399,10 @@ leaving them blank. Audio is git-ignored; ship the files out of band.
 | `filters.py` | attribute filters; unknown values hidden and counted apart |
 | `evidence.py` | evidence per result, query agreement, `short_reason` / `summarize` |
 | `agreement.py` | compares attributes with labelled tracks |
+| `intents.py` | query interpretation: the nearest labelled searches → sound, energy and tempo boosts |
+| `intent_teacher.py` | writes `intent_labels.json` with a local language model (Ollama); offline only |
+| `intent_labels.json` | 2,159 searches as `gemma3:4b` read them, with the teacher's identity and prompt hash |
+| `intent_eval.py` | recognition and ranking checks on the fixed `intent_eval_queries*.json` sets |
 | `demo.py` | CLI |
 | `errors.py` | shared error hierarchy |
 

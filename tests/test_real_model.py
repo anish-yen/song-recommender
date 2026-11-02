@@ -175,3 +175,43 @@ class TestAudioTagger:
         piano_moods = set(mood_from_scores(scores["piano"])["labels"])
         assert piano_moods & {"calm", "sad"}
         assert not piano_moods & {"energetic", "angry"}
+
+
+@pytest.fixture(scope="module")
+def interpreter(encoder, tmp_path_factory):
+    """The shipped label file with the real sentence model and CLAP; ~20 s to build."""
+    from recommendation_engine.intents import QueryInterpreter
+
+    return QueryInterpreter.load(encoder.embed_text, encoder.space.describe(),
+                                 cache_dir=tmp_path_factory.mktemp("intents"))
+
+
+class TestQueryInterpretation:
+    """The distilled reader on *development* phrases, none of them in
+    ``intent_labels.json``. Never put the evaluation sets (``intent_eval_queries*.json``)
+    here: they would stop being a fair test."""
+
+    #: phrase -> the energy band the situation implies. The reader may abstain (no
+    #: boost); it must never give the opposite band. At the time of writing it
+    #: abstained on "boxing session" and "cramming for a test".
+    ENERGY = {"kickboxing class": "high", "boxing session": "high", "pre-fight warm up": "high",
+              "power nap": "low", "quiet evening reading": "low", "cramming for a test": "low"}
+    SITUATIONS = ["car ride home", "meal prep", "snowed in", "my ex left me", "dragon battle"]
+
+    def test_activities_read_as_their_band_or_not_at_all(self, interpreter):
+        read = {q: interpreter.interpret(q).energy for q in self.ENERGY}
+        assert {q: e for q, e in read.items() if e not in (self.ENERGY[q], None)} == {}
+        assert sum(e is not None for e in read.values()) >= 4
+
+    def test_situations_get_a_sound_and_a_matched_search(self, interpreter):
+        readings = {q: interpreter.interpret(q) for q in self.SITUATIONS}
+        assert [q for q, r in readings.items() if r.sound is None or not r.similar_to] == []
+
+    def test_gibberish_reads_as_nothing(self, interpreter):
+        from recommendation_engine.intents import Reading
+
+        assert interpreter.interpret("qwerty uiop") == Reading()
+
+    def test_the_same_search_reads_the_same_way(self, interpreter):
+        first, second = (interpreter.interpret("rainy sunday afternoon") for _ in range(2))
+        assert first == second and np.allclose(first.sound, second.sound)

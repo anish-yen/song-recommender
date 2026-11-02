@@ -13,9 +13,12 @@ uv run uvicorn api.app:app --port 8000      # interactive docs at http://localho
 | `INDEX_DIR` | `.index` | index from `demo build-index` (+ `attributes.json` for filters and reasons) |
 | `DEVICE` | `cpu` | device for query text encoding (`mps`, `cuda`, `auto`) |
 | `PUBLIC_API_URL` | request URL | base for `previewUrl` links, when the API sits behind a proxy |
+| `QUERY_INTERPRETATION` | `on` | `off` sends every query to CLAP as typed, with no reading |
 
-The model loads **once** at startup and encodes one warm-up query, so the first real
-search is as fast as the rest. Routes are plain `def` (FastAPI runs them in a worker
+CLAP loads **once** at startup and encodes one warm-up query. With interpretation on, the
+sentence model loads too (~90 MB download once), and the first start encodes the labelled
+searches into `.cache/intents/` (~20 s on CPU; later starts load it in under a second). A reading
+then costs ~5 ms on CPU. Routes are plain `def` (FastAPI runs them in a worker
 thread), never `async def`: CPU-bound encoding would otherwise block every request.
 If the index is missing, the service still starts and answers `503` with the reason.
 
@@ -40,10 +43,32 @@ which is why they are standardised first. Equal weights are a starting guess, no
 **Seed.** `{"providerId": "<track_id>"}` from the picker, or `{"title": ...}`, which must match
 exactly one catalog title (otherwise 404, "pick the seed from the suggestions").
 
+**Interpretation.** Each search ("music for the gym", "winding down before bed") is read from
+the most similar searches a language model labelled offline, into a sound blended with the
+query, plus energy and tempo **boosts** that reorder results and never hide any — see the
+engine README,
+[Query interpretation](../recommendation_engine/README.md#query-interpretation).
+`/recommendations` and `/search` accept `infer` (default `true`) and `ignore_inferred` (any of
+`"energy"`, `"tempo"`, `"sound"`; an unknown part is 422). An explicit filter on an attribute
+replaces its boost. The response lists the reading under `interpreted`, each entry with a
+`status` of `applied`, `overridden`, `ignored` or `unavailable` (no `attributes.json`, so energy
+and tempo cannot be checked, or a query+seed blend, which uses the sound but not the boosts yet); the `sound` entry's `value` is the labelled search it matched. A
+search unlike every labelled one gets no reading (`interpreted: []`) and runs as typed. The discover
+page turns every applied entry into a removable chip that re-sends the search with that part in
+`ignore_inferred`.
+
 **Filters.** `vocals`, `genre`, `mood`, `energy`, `tempo_min`, `tempo_max`; `""` means "any".
 Filters apply **before** the top-`k` cut, so a filter never shrinks a list that had other
 matching tracks. `hidden` reports how many tracks a filter removed for mismatching versus for
-having no estimate. `/recommendations` caps results at 2 per artist unless
+having no estimate.
+
+**Weak matches.** A text search hides results whose cosine is less than one standard deviation
+above the catalog's mean for that query (`evidence.MIN_MATCH_Z`): they sound no closer to the
+search than a typical track, and a boost never rescues one. `hidden.weak` counts them, so a
+search can return fewer than `k`. `show_weak: true` keeps them instead, each marked with
+`evidence.match.weak` and "(weak match)" in its `why`; the discover page's *Show them* button
+sends it. Similar-song and blended searches are not cut.
+`/recommendations` caps results at 2 per artist unless
 `max_per_artist` says otherwise (`null` = no cap); the other routes default to no cap.
 
 ## Response
@@ -51,7 +76,10 @@ having no estimate. `/recommendations` caps results at 2 per artist unless
 ```json
 {
   "queryId": "8f1c…", "mode": "search | similar | blend", "elapsedMs": 15.4,
-  "hidden": { "mismatch": 0, "unknown": 0 },
+  "hidden": { "mismatch": 0, "unknown": 0, "weak": 2 },
+  "interpreted": [{ "attribute": "energy", "value": "high", "status": "applied" },
+                  { "attribute": "tempo", "value": [120, 160], "status": "applied" },
+                  { "attribute": "sound", "value": "cycling workout music", "status": "applied" }],
   "results": [{
     "providerId": "fma-000002", "title": "Food", "artist": "AWOL",
     "album": null, "coverArtUrl": null,

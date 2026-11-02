@@ -12,6 +12,8 @@ A focused Next.js music-discovery interface for describing a vibe, starting from
 To get live results instead of mock data, start the API (`uv run uvicorn api.app:app --port 8000`, see
 [../api/README.md](../api/README.md)) and set `RECOMMENDATION_API_URL="http://127.0.0.1:8000"`. Discovery,
 filters, the seed picker and previews work without a database; sign-up, feedback and playlists need one.
+When the API interprets a search ("music for the gym" → high energy), the discover page shows each
+inference as a chip; removing one re-runs the search without it (`ignore_inferred`).
 
 Run checks with `npm test`, `npm run lint`, and `npm run build`.
 

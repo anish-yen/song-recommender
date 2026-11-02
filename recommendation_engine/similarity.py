@@ -161,6 +161,7 @@ def rank_by_score(
     k: int,
     exclude: frozenset[str] = frozenset(),
     max_per_artist: int | None = None,
+    order_by: np.ndarray | None = None,
 ) -> list[Recommendation]:
     """Turn raw scores into ranked results.
 
@@ -168,6 +169,10 @@ def rank_by_score(
     tie-break is not cosmetic: without it, two tracks with identical scores would
     swap places depending on NumPy's sort internals, so a rerun of the same query
     could show a different ordering.
+
+    ``order_by``, when given, decides the order instead (e.g. cosine plus a tempo
+    boost) while each result's ``similarity`` stays the plain score, so a ranking
+    adjustment is never reported as a closer sound match.
     """
     k = _validate_k(k)
     if max_per_artist is not None:
@@ -176,16 +181,19 @@ def rank_by_score(
         if max_per_artist < 1:
             raise ValueError(f"max_per_artist must be at least 1, got {max_per_artist}")
 
+    order = scores if order_by is None else order_by
+    if len(order) != len(scores):
+        raise ValueError(f"order_by has {len(order)} values for {len(scores)} scores")
     candidates = [
-        (self_id, float(score))
-        for self_id, score in zip(catalog.track_ids, scores)
+        (self_id, float(rank_key), float(score))
+        for self_id, rank_key, score in zip(catalog.track_ids, order, scores)
         if self_id not in exclude
     ]
-    candidates.sort(key=lambda pair: (-pair[1], pair[0]))
+    candidates.sort(key=lambda row: (-row[1], row[0]))
 
     results: list[Recommendation] = []
     per_artist: dict[str, int] = {}
-    for track_id, score in candidates:
+    for track_id, _, score in candidates:
         if len(results) == k:
             break
         meta = catalog.metadata.get(track_id, {})
@@ -215,11 +223,13 @@ def search(
     query_space: EmbeddingSpace | None = None,
     exclude: frozenset[str] = frozenset(),
     max_per_artist: int | None = None,
+    bonus: np.ndarray | None = None,
 ) -> list[Recommendation]:
     """Rank the catalog against an already-encoded query vector.
 
     Returns fewer than ``k`` results when the catalog holds fewer usable tracks,
-    and an empty list for an empty catalog — neither is an error.
+    and an empty list for an empty catalog — neither is an error. ``bonus`` (one
+    value per catalog track) is added for ordering only; see ``rank_by_score``.
     """
     k = _validate_k(k)
     _require_same_space(catalog, query_space)
@@ -227,8 +237,10 @@ def search(
         return []
     vector = validate_vector(query_vector, catalog.space, label="query")
     scores = cosine_scores(vector, catalog.vectors)
+    order_by = None if bonus is None else scores + np.asarray(bonus, dtype=np.float32)
     return rank_by_score(
-        catalog, scores, k=k, exclude=exclude, max_per_artist=max_per_artist
+        catalog, scores, k=k, exclude=exclude, max_per_artist=max_per_artist,
+        order_by=order_by,
     )
 
 

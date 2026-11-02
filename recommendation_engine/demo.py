@@ -30,6 +30,7 @@ from .evidence import (
 )
 from .filters import ENERGY_BANDS, AttributeFilters
 from .index import build_index, load_index
+from .intents import QueryInterpreter, read_query
 from .manifest import load_manifest
 
 DEFAULT_INDEX_DIR = ".index"
@@ -59,6 +60,18 @@ def _print_results(explained: ExplainedResults, *, as_json: bool, verbose: bool)
         lines = summarize(result.evidence) if verbose else [short_reason(result.evidence)]
         for line in lines:
             print(f"      {line}")
+
+
+def _describe_interpreted(entry: dict[str, object]) -> str:
+    value = entry["value"]
+    if entry["attribute"] == "tempo":
+        low, high = value
+        value = (f"{low:g}-{high:g} BPM" if low is not None and high is not None
+                 else f">= {low:g} BPM" if high is None else f"<= {high:g} BPM")
+    elif entry["attribute"] == "sound":
+        value = f'similar to "{value}"'
+    text = f"{entry['attribute']} {value}"
+    return text if entry["status"] == "applied" else f"{text} ({entry['status']})"
 
 
 def _filters(args: argparse.Namespace) -> AttributeFilters:
@@ -107,7 +120,12 @@ def cmd_search(args: argparse.Namespace) -> int:
     catalog = load_index(args.index_dir)
     attributes = _attributes(args, catalog, filters)
     encoder = ClapEncoder(space=catalog.space, device=args.device)
-    query_vector = encoder.embed_text([args.query])[0]
+    interpreter = (None if args.no_infer
+                   else QueryInterpreter.load(encoder.embed_text, encoder.space.describe()))
+    query_vector, applied = read_query(
+        args.query, filters, encode=lambda text: encoder.embed_text([text])[0],
+        interpreter=interpreter, measurable=attributes is not None,
+    )
     explained = explained_search(
         catalog,
         query_vector,
@@ -117,7 +135,11 @@ def cmd_search(args: argparse.Namespace) -> int:
         k=args.k,
         query_space=encoder.space,
         max_per_artist=args.max_per_artist,
+        boosts=applied.boosts if applied else (),
+        similar_to=applied.similar_to if applied else None,
     )
+    if applied and applied.interpreted and not args.json:
+        print("read as: " + "; ".join(_describe_interpreted(e) for e in applied.interpreted))
     _print_results(explained, as_json=args.json, verbose=args.verbose)
     return 0
 
@@ -178,6 +200,8 @@ def build_parser() -> argparse.ArgumentParser:
     search_cmd.add_argument("query", help='e.g. "late-night beats without heavy vocals"')
     search_cmd.add_argument("-k", type=int, default=10, help="results to return")
     search_cmd.add_argument("--device", default="cpu", help="device for text encoding")
+    search_cmd.add_argument("--no-infer", action="store_true",
+                            help="send the query to CLAP as typed: no query interpretation")
     search_cmd.add_argument(
         "--max-per-artist",
         type=int,

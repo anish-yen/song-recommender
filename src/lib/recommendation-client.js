@@ -23,7 +23,7 @@ export async function getRecommendations(payload) {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), cache: 'no-store',
   });
   const data = await engineJson(response, 'The recommendation service is currently unavailable.');
-  return { results: Array.isArray(data.results) ? data.results : [], mode: data.mode || 'live', queryId: data.queryId || null, hidden: data.hidden || null };
+  return { results: Array.isArray(data.results) ? data.results : [], mode: data.mode || 'live', queryId: data.queryId || null, hidden: data.hidden || null, interpreted: Array.isArray(data.interpreted) ? data.interpreted : [] };
 }
 
 export async function getFilterOptions() {

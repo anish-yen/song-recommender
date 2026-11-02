@@ -13,6 +13,7 @@ from recommendation_engine.agreement import compare_with_labels
 from recommendation_engine.attributes import ESTIMATE_KIND, MEASURED_KIND
 from recommendation_engine.errors import RecommenderError
 from recommendation_engine.evidence import (
+    Boost,
     explained_search,
     explained_similar,
     query_terms,
@@ -269,3 +270,40 @@ class TestAgreement:
     def test_rejects_tracks_missing_from_the_index(self):
         with pytest.raises(ValueError, match="ghost"):
             compare_with_labels(ATTRS, {"ghost": {"vocals": "vocal"}})
+
+
+class TestWeakMatches:
+    """Cosines against QUERY: a 1.0, c 0.707, b 0.0, d -1.0; mean 0.177, std 0.770."""
+
+    def test_results_not_clearly_above_the_catalog_mean_are_hidden_and_counted(self, catalog):
+        out = explained_search(catalog, QUERY, query_text="q", attributes=ATTRS, k=4, min_z=0.0)
+        assert [r.track_id for r in out.results] == ["a", "c"]  # floor 0.177
+        assert out.hidden_weak == 2
+        strict = explained_search(catalog, QUERY, query_text="q", attributes=ATTRS, k=4, min_z=1.0)
+        assert [r.track_id for r in strict.results] == ["a"]  # floor 0.947
+
+    def test_a_boost_never_rescues_a_weak_match(self, catalog):
+        out = explained_search(catalog, QUERY, query_text="gym", attributes=ATTRS, k=4,
+                               boosts=(Boost("energy", "high", 0.5),), min_z=1.0)
+        # c (high energy) would rank first with the boost, but its cosine is below the floor.
+        assert [r.track_id for r in out.results] == ["a"]
+
+    def test_when_every_track_scores_the_same_nothing_is_hidden(self, catalog):
+        flat = np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32)  # orthogonal to all four
+        out = explained_search(catalog, flat, query_text="q", attributes=ATTRS, k=4, min_z=1.0)
+        assert len(out.results) == 4 and out.hidden_weak == 0
+
+    def test_weak_matches_can_be_kept_marked_and_named_in_the_reason(self, catalog):
+        out = explained_search(catalog, QUERY, query_text="q", attributes=ATTRS, k=4,
+                               min_z=1.0, hide_weak=False)
+        assert [r.track_id for r in out.results] == ["a", "c", "b", "d"]
+        assert out.hidden_weak == 0
+        assert [bool(r.evidence["match"].get("weak")) for r in out.results] == [
+            False, True, True, True]
+        assert short_reason(out.results[1].evidence).endswith("(weak match)")
+        assert ("Weak match: sounds no closer to the search than a typical track"
+                in summarize(out.results[1].evidence))
+
+    def test_off_by_default(self, catalog):
+        out = explained_search(catalog, QUERY, query_text="q", attributes=ATTRS, k=4)
+        assert len(out.results) == 4 and out.hidden_weak == 0

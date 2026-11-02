@@ -92,7 +92,7 @@ class TestRecommendationsContract:
         body = response.json()
         assert ids(response) == ["b", "d"]
         # a is vocal (mismatch); c's vocals estimate is unknown.
-        assert body["hidden"] == {"mismatch": 1, "unknown": 1}
+        assert body["hidden"] == {"mismatch": 1, "unknown": 1, "weak": 0}
         assert body["results"][0]["why"].startswith("Instrumental (model estimate)")
 
 
@@ -112,7 +112,7 @@ class TestDiscoverPagePayload:
                                 json={"query": "toward a", "seed": None, "filters": self.EMPTY, "k": 5})
         assert response.status_code == 200
         assert ids(response) == ["a", "c", "b", "d"]
-        assert response.json()["hidden"] == {"mismatch": 0, "unknown": 0}
+        assert response.json()["hidden"] == {"mismatch": 0, "unknown": 0, "weak": 0}
 
     def test_picker_seed_with_title_and_artist(self, client):
         seed = {"providerId": "a", "title": "Title a", "artist": "Artist One"}
@@ -205,3 +205,107 @@ class TestPreviews:
             assert served.content == b"ID3fake"
             assert served.headers["content-type"] == "audio/mpeg"
             assert c.get("/audio/b").status_code == 404
+
+
+class StubInterpreter:
+    """Reads every search like "workout playlist": high energy, 120-160 BPM, and a
+    sound in b's direction."""
+
+    def interpret(self, query):
+        from recommendation_engine.intents import Reading
+
+        return Reading("high", (120.0, 160.0), np.array([0, 1, 0, 0], np.float32),
+                       "workout playlist")
+
+
+class TestQueryInterpretation:
+    """The added sound points the blended query exactly at c (cosines: c 1.0, a 0.707,
+    b 0.707, d -0.707). Energy bands: a low, b medium, c high, d low; tempos a 120,
+    b 124, c unknown, d 90.
+    """
+
+    @pytest.fixture
+    def serve(self, catalog):
+        def make(attributes=ATTRS):
+            return TestClient(create_app(Recommender(
+                catalog, attributes, StubEncoder(), interpreter=StubInterpreter())))
+        return make
+
+    def test_a_reading_reorders_hides_nothing_and_says_so(self, serve):
+        with serve() as c:
+            body = c.post("/recommendations", json={"query": "toward a", "k": 4}).json()
+        assert [r["providerId"] for r in body["results"]] == ["c", "a", "b", "d"]
+        assert body["hidden"] == {"mismatch": 0, "unknown": 0, "weak": 0}
+        assert body["results"][0]["similarities"] == {"query": 1.0}  # boost not in the cosine
+        assert {(e["attribute"], e["status"]) for e in body["interpreted"]} == {
+            ("energy", "applied"), ("tempo", "applied"), ("sound", "applied")}
+        assert body["results"][0]["why"] == (
+            'Fits your search: high energy (measured) · closest sound match to '
+            '"toward a", read as similar to "workout playlist"')
+
+    def test_infer_false_sends_the_query_as_typed(self, serve):
+        with serve() as c:
+            response = c.post("/recommendations",
+                              json={"query": "toward a", "infer": False, "k": 4})
+        assert ids(response) == ["a", "c", "b", "d"]
+        assert response.json()["interpreted"] == []
+
+    def test_removing_one_chip_keeps_the_rest(self, serve):
+        with serve() as c:
+            body = c.post("/recommendations", json={
+                "query": "toward a", "ignore_inferred": ["energy"], "k": 4}).json()
+        assert {e["attribute"]: e["status"] for e in body["interpreted"]}["energy"] == "ignored"
+        assert "energy" not in body["results"][0]["why"]
+
+    def test_an_explicit_filter_beats_the_reading(self, serve):
+        with serve() as c:
+            response = c.post("/recommendations", json={
+                "query": "toward a", "filters": {"energy": "low"}, "k": 4})
+        assert set(ids(response)) == {"a", "d"}
+        assert {e["attribute"]: e["status"]
+                for e in response.json()["interpreted"]}["energy"] == "overridden"
+
+    def test_a_blend_reports_boosts_as_unavailable_because_it_does_not_apply_them(self, serve):
+        with serve() as c:
+            body = c.post("/recommendations", json={
+                "query": "toward a", "seed": {"providerId": "b"}, "k": 3}).json()
+        assert body["mode"] == "blend"
+        assert {e["attribute"]: e["status"] for e in body["interpreted"]} == {
+            "energy": "unavailable", "tempo": "unavailable", "sound": "applied"}
+
+    def test_unknown_part_to_ignore_is_422(self, serve):
+        with serve() as c:
+            response = c.post("/recommendations", json={
+                "query": "gym", "ignore_inferred": ["mood"]})
+        assert response.status_code == 422
+
+    def test_missing_attributes_never_turn_a_search_into_an_error(self, serve):
+        with serve(attributes=None) as c:
+            response = c.post("/recommendations", json={"query": "toward a", "k": 4})
+        assert response.status_code == 200 and len(ids(response)) == 4
+        assert {e["attribute"]: e["status"] for e in response.json()["interpreted"]} == {
+            "energy": "unavailable", "tempo": "unavailable", "sound": "applied"}
+
+    def test_without_an_interpreter_nothing_is_inferred(self, client):
+        response = client.post("/recommendations", json={"query": "music for the gym", "k": 4})
+        assert len(ids(response)) == 4 and response.json()["interpreted"] == []
+
+
+def test_weak_matches_are_hidden_from_text_search_and_counted(catalog):
+    recommender = Recommender(catalog, ATTRS, StubEncoder(), min_match_z=1.0)
+    with TestClient(create_app(recommender)) as c:
+        body = c.post("/recommendations", json={"query": "toward a", "k": 4}).json()
+    # Cosines a 1.0, c 0.707, b 0.0, d -1.0: only a clears mean + 1 std (0.947).
+    assert [r["providerId"] for r in body["results"]] == ["a"]
+    assert body["hidden"]["weak"] == 3
+
+
+def test_show_weak_returns_weak_matches_marked_instead_of_hidden(catalog):
+    recommender = Recommender(catalog, ATTRS, StubEncoder(), min_match_z=1.0)
+    with TestClient(create_app(recommender)) as c:
+        body = c.post("/recommendations",
+                      json={"query": "toward a", "k": 4, "show_weak": True}).json()
+    assert [r["providerId"] for r in body["results"]] == ["a", "c", "b", "d"]
+    assert body["hidden"]["weak"] == 0
+    assert [r["providerId"] for r in body["results"]
+            if r["evidence"]["match"].get("weak")] == ["c", "b", "d"]

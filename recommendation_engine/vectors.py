@@ -70,16 +70,3 @@ def pool_excerpts(
         ]
     )
     return l2_normalize(unit.mean(axis=0), space, label=f"{label} pooled")
-
-
-def stack_matrix(
-    vectors: list[np.ndarray], space: EmbeddingSpace, *, labels: list[str]
-) -> np.ndarray:
-    """Build a normalised ``(n, dim)`` float32 matrix from per-track vectors."""
-    if len(vectors) != len(labels):
-        raise ValueError("vectors and labels must be the same length")
-    if not vectors:
-        return np.zeros((0, space.dim), dtype=np.float32)
-    return np.stack(
-        [l2_normalize(v, space, label=label) for v, label in zip(vectors, labels)]
-    )
