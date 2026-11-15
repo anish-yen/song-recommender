@@ -26,6 +26,13 @@ from recommendation_engine.evidence import (
     track_measurements,
 )
 from recommendation_engine.filters import ENERGY_BANDS, TEMPO_LIMITS, AttributeFilters, apply_filters
+from recommendation_engine.hubness import (
+    DEFAULT_HUB_WEIGHT,
+    HubPenalties,
+    adjustment,
+    load_hubness,
+    validate_weight,
+)
 from recommendation_engine.index import load_index
 from recommendation_engine.similarity import Catalog, cosine_scores, rank_by_score
 
@@ -73,18 +80,25 @@ class Recommender:
     """One catalog plus one encoder, shared by every request in the process."""
 
     def __init__(self, catalog: Catalog, attributes, encoder, *,
-                 diversity: float = DEFAULT_LAMBDA) -> None:
+                 diversity: float = DEFAULT_LAMBDA,
+                 hubness: HubPenalties | None = None,
+                 hub_weight: float = DEFAULT_HUB_WEIGHT) -> None:
         self.catalog = catalog
         self.attributes = attributes
         self.encoder = encoder
         #: MMR weight on relevance; 1.0 switches the diversity rerank off.
         self.diversity = diversity
+        #: Per-track hub penalties (``hubness.py``); ``None`` = no correction.
+        self.hubness = hubness
+        #: 0.5 ranks like CSLS; 0 switches hub correction off.
+        self.hub_weight = validate_weight(hub_weight)
         # Torch modules are not documented as safe for concurrent forward passes;
         # text encoding is ~15 ms, so serialising it costs little.
         self._encode_lock = threading.Lock()
 
     @classmethod
-    def from_index(cls, index_dir, *, device: str = "cpu") -> "Recommender":
+    def from_index(cls, index_dir, *, device: str = "cpu",
+                   hub_weight: float = DEFAULT_HUB_WEIGHT) -> "Recommender":
         catalog = load_index(index_dir)
         try:
             attributes = load_attributes(index_dir, catalog)
@@ -92,9 +106,15 @@ class Recommender:
             # No (or stale) attributes: search still works, filters are refused,
             # and reasons fall back to the similarity match alone.
             attributes = None
+        try:
+            hubness = load_hubness(index_dir, catalog)
+        except IndexCorruptError:
+            # Not built, or built for an older index: rank by plain cosine.
+            hubness = None
         from recommendation_engine.embeddings import ClapEncoder
 
-        recommender = cls(catalog, attributes, ClapEncoder(space=catalog.space, device=device))
+        recommender = cls(catalog, attributes, ClapEncoder(space=catalog.space, device=device),
+                          hubness=hubness, hub_weight=hub_weight)
         # The first forward pass pays one-off setup (~1.4 s measured on CPU); pay it
         # at startup so the first user's search meets the latency target.
         recommender.encode("warm-up")
@@ -193,12 +213,14 @@ class Recommender:
             return self._blend(query, seed_id, filters, k, pool_k, max_per_artist)
         if seed_id:
             out = explained_similar(self.catalog, seed_id, attributes=self.attributes,
-                                    filters=filters, k=pool_k, max_per_artist=max_per_artist)
+                                    filters=filters, k=pool_k, max_per_artist=max_per_artist,
+                                    hub=self._hub("audio"))
             path = "seed"
         else:
             out = explained_search(self.catalog, self.encode(query), query_text=query,
                                    attributes=self.attributes, filters=filters, k=pool_k,
-                                   query_space=self.encoder.space, max_per_artist=max_per_artist)
+                                   query_space=self.encoder.space, max_per_artist=max_per_artist,
+                                   hub=self._hub("text"))
             path = "query"
         results = [
             Ranked(r.track_id, self.catalog.metadata[r.track_id], r.similarity,
@@ -207,6 +229,10 @@ class Recommender:
         ]
         return Answer("similar" if seed_id else "search", results,
                       out.hidden_mismatch, out.hidden_unknown)
+
+    def _hub(self, path: str):
+        """Hub correction for one path ("text" = mood search, "audio" = seed)."""
+        return adjustment(self.hubness, path, self.hub_weight)
 
     def _rerank(self, pool: list, k: int) -> list:
         """Pick ``k`` of ``pool`` with MMR; similarity ranks and scores are untouched."""
@@ -234,8 +260,13 @@ class Recommender:
         query_vector = self.encode(query)
         q_scores = cosine_scores(query_vector, catalog.vectors)
         s_scores = cosine_scores(catalog.vector_of(seed_id), catalog.vectors)
-        blended = (BLEND_WEIGHTS["query"] * _zscore(q_scores)
-                   + BLEND_WEIGHTS["seed"] * _zscore(s_scores))
+        # Hub correction applies to each path before standardising, so a hub cannot
+        # sneak back in through whichever path is uncorrected.
+        q_hub, s_hub = self._hub("text"), self._hub("audio")
+        q_rank_scores = q_scores - q_hub.offsets() if q_hub else q_scores
+        s_rank_scores = s_scores - s_hub.offsets() if s_hub else s_scores
+        blended = (BLEND_WEIGHTS["query"] * _zscore(q_rank_scores)
+                   + BLEND_WEIGHTS["seed"] * _zscore(s_rank_scores))
 
         excluded: frozenset[str] = frozenset()
         hidden_mismatch = hidden_unknown = 0
@@ -256,9 +287,10 @@ class Recommender:
         everyone = len(catalog)
         q_ev = {r.track_id: r.evidence for r in explained_search(
             catalog, query_vector, query_text=query, attributes=self.attributes,
-            filters=filters, k=everyone, query_space=self.encoder.space).results}
+            filters=filters, k=everyone, query_space=self.encoder.space, hub=q_hub).results}
         s_ev = {r.track_id: r.evidence for r in explained_similar(
-            catalog, seed_id, attributes=self.attributes, filters=filters, k=everyone).results}
+            catalog, seed_id, attributes=self.attributes, filters=filters, k=everyone,
+            hub=s_hub).results}
         position = {t: i for i, t in enumerate(catalog.track_ids)}
         candidates = [t for t in catalog.track_ids if t not in excluded and t != seed_id]
 
@@ -266,7 +298,8 @@ class Recommender:
             order = sorted(candidates, key=lambda t: (-float(scores[position[t]]), t))
             return {t: rank for rank, t in enumerate(order, start=1)}
 
-        q_rank, s_rank = path_ranks(q_scores), path_ranks(s_scores)
+        # Per-path ranks are in the order each path alone would have shown.
+        q_rank, s_rank = path_ranks(q_rank_scores), path_ranks(s_rank_scores)
         seed_title = str(catalog.metadata[seed_id].get("title", seed_id))
 
         results = []
@@ -286,6 +319,10 @@ class Recommender:
                 "query": q, "seed": s,
                 "blend": {"method": "sum of z-scored cosines", "weights": BLEND_WEIGHTS},
             }
+            hub_ev = {path: ev["hubness"] for path, ev in (("query", q), ("seed", s))
+                      if "hubness" in ev}
+            if hub_ev:
+                evidence["hubness"] = hub_ev
             why = short_reason(evidence)
             i = position[rec.track_id]
             results.append(Ranked(

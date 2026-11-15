@@ -12,7 +12,8 @@ so a track that sounds like something already in the list has to beat it by more
   ship switched off and be tuned later.
 * The weight is a testing guess, not a value derived from data (design doc:
   "initial numbers are testing guesses"). Tune it against the graded evaluation.
-* Relevance is the result's own score rescaled to [0, 1] within the pool, because
+* Relevance is the result's ranking score (``rank_score`` when hub correction ordered
+  the pool, else ``similarity``) rescaled to [0, 1] within the pool, because
   the three modes score on different scales (see ``_pool_scaled``). The result's
   ``similarity`` field is never replaced, so explanations remain measured evidence.
 * Redundancy is a cosine clipped at 0: sounding opposite earns no variety bonus.
@@ -55,7 +56,11 @@ def mmr_rerank(
     # Cosine between every pair of candidates. An opposite-sounding track is not
     # "more different" than an unrelated one, so a negative cosine earns no bonus.
     pairwise = np.clip(vectors @ vectors.T, 0.0, None)
-    relevance = _pool_scaled(np.array([r.similarity for r in ranked], dtype=np.float64))
+    # Use the score the pool was ordered by: falling back to raw similarity would
+    # quietly undo a hub correction inside the pool.
+    relevance = _pool_scaled(np.array(
+        [r.similarity if r.rank_score is None else r.rank_score for r in ranked],
+        dtype=np.float64))
 
     picked: list[int] = [0]  # the best match always stays first
     # max similarity of each candidate to anything picked so far

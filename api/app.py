@@ -31,6 +31,7 @@ from recommendation_engine.errors import (
     UnknownTrackError,
 )
 from recommendation_engine.filters import AttributeFilters
+from recommendation_engine.hubness import DEFAULT_HUB_WEIGHT
 
 from .service import MAX_K, MAX_QUERY_CHARS, Answer, Ranked, Recommender
 
@@ -106,6 +107,7 @@ def create_app(recommender: Recommender | None = None) -> FastAPI:
                 app.state.recommender = Recommender.from_index(
                     os.environ.get("INDEX_DIR", ".index"),
                     device=os.environ.get("DEVICE", "cpu"),
+                    hub_weight=float(os.environ.get("HUB_WEIGHT", DEFAULT_HUB_WEIGHT)),
                 )
             except RecommenderError as exc:
                 # Stay up and answer 503 with the reason, rather than crash-looping.

@@ -33,6 +33,10 @@ class Recommendation:
     #: track, and model estimates marked with their ``kind``. Never from raw
     #: embedding dimensions, and never from an LLM.
     evidence: dict[str, object] = dataclasses.field(default_factory=dict)
+    #: The score the result was *ordered* by, when that differs from
+    #: ``similarity`` (hub correction subtracts a per-track penalty). ``None``
+    #: means the order is plain ``similarity`` order.
+    rank_score: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -45,6 +49,8 @@ class Recommendation:
             payload["provider_url"] = self.provider_url
         if self.evidence:
             payload["evidence"] = dict(self.evidence)
+        if self.rank_score is not None:
+            payload["rank_score"] = self.rank_score
         return payload
 
 
@@ -161,6 +167,7 @@ def rank_by_score(
     k: int,
     exclude: frozenset[str] = frozenset(),
     max_per_artist: int | None = None,
+    penalty: np.ndarray | None = None,
 ) -> list[Recommendation]:
     """Turn raw scores into ranked results.
 
@@ -168,6 +175,10 @@ def rank_by_score(
     tie-break is not cosmetic: without it, two tracks with identical scores would
     swap places depending on NumPy's sort internals, so a rerun of the same query
     could show a different ordering.
+
+    ``penalty`` (one value per catalog track) is subtracted from the scores for
+    ordering only: each result still reports its raw score as ``similarity`` and
+    carries the ordering score as ``rank_score``. See ``hubness.py``.
     """
     k = _validate_k(k)
     if max_per_artist is not None:
@@ -176,16 +187,25 @@ def rank_by_score(
         if max_per_artist < 1:
             raise ValueError(f"max_per_artist must be at least 1, got {max_per_artist}")
 
+    scores = np.asarray(scores)
+    if penalty is None:
+        order_scores = scores
+    else:
+        penalty = np.asarray(penalty, dtype=np.float64)
+        if penalty.shape != scores.shape or not np.all(np.isfinite(penalty)):
+            raise ValueError("penalty must be one finite value per catalog track")
+        order_scores = scores.astype(np.float64) - penalty
+
     candidates = [
-        (self_id, float(score))
-        for self_id, score in zip(catalog.track_ids, scores)
+        (self_id, float(score), float(order))
+        for self_id, score, order in zip(catalog.track_ids, scores, order_scores)
         if self_id not in exclude
     ]
-    candidates.sort(key=lambda pair: (-pair[1], pair[0]))
+    candidates.sort(key=lambda item: (-item[2], item[0]))
 
     results: list[Recommendation] = []
     per_artist: dict[str, int] = {}
-    for track_id, score in candidates:
+    for track_id, score, order in candidates:
         if len(results) == k:
             break
         meta = catalog.metadata.get(track_id, {})
@@ -202,6 +222,7 @@ def rank_by_score(
                 artist=artist,
                 similarity=score,
                 provider_url=meta.get("provider_url") or None,  # type: ignore[arg-type]
+                rank_score=None if penalty is None else order,
             )
         )
     return results
@@ -215,6 +236,7 @@ def search(
     query_space: EmbeddingSpace | None = None,
     exclude: frozenset[str] = frozenset(),
     max_per_artist: int | None = None,
+    penalty: np.ndarray | None = None,
 ) -> list[Recommendation]:
     """Rank the catalog against an already-encoded query vector.
 
@@ -228,7 +250,8 @@ def search(
     vector = validate_vector(query_vector, catalog.space, label="query")
     scores = cosine_scores(vector, catalog.vectors)
     return rank_by_score(
-        catalog, scores, k=k, exclude=exclude, max_per_artist=max_per_artist
+        catalog, scores, k=k, exclude=exclude, max_per_artist=max_per_artist,
+        penalty=penalty,
     )
 
 
@@ -239,6 +262,7 @@ def similar_to(
     k: int = 10,
     exclude: frozenset[str] = frozenset(),
     max_per_artist: int | None = None,
+    penalty: np.ndarray | None = None,
 ) -> list[Recommendation]:
     """Nearest neighbours of a catalog track, excluding the seed itself.
 
@@ -256,4 +280,5 @@ def similar_to(
         k=k,
         exclude=frozenset(exclude) | {track_id},
         max_per_artist=max_per_artist,
+        penalty=penalty,
     )

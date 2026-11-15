@@ -30,6 +30,7 @@ from .attributes import ESTIMATE_KIND, LABELS, MEASURED_KIND
 from .config import EmbeddingSpace
 from .errors import RecommenderError
 from .filters import AttributeFilters, FilterOutcome, apply_filters, energy_band
+from .hubness import HubAdjustment
 from .similarity import Catalog, Recommendation, search, similar_to
 
 #: Two tempos within this fraction of the seed's count as "similar tempo".
@@ -168,6 +169,8 @@ def _with_evidence(
     outcome: FilterOutcome | None,
     seed_attrs: tuple[dict[str, object], dict[str, object]] | None = None,
     terms: list[dict[str, str]] | None = None,
+    catalog: Catalog | None = None,
+    hub: HubAdjustment | None = None,
 ) -> list[Recommendation]:
     explained = []
     for rank, rec in enumerate(results, start=1):
@@ -194,6 +197,8 @@ def _with_evidence(
                       and (t["attribute"], t["value"]) not in filtered]
             if agreed:
                 evidence["query_agreement"] = {"kind": ESTIMATE_KIND, "terms": agreed}
+        if hub is not None and catalog is not None:
+            evidence["hubness"] = hub.evidence(catalog.position_of(rec.track_id))
         explained.append(dataclasses.replace(rec, evidence=evidence))
     return explained
 
@@ -223,16 +228,22 @@ def explained_search(
     k: int = 10,
     query_space: EmbeddingSpace | None = None,
     max_per_artist: int | None = None,
+    hub: HubAdjustment | None = None,
 ) -> ExplainedResults:
-    """Mood search with filters applied before the ``k`` cut, plus evidence."""
+    """Mood search with filters applied before the ``k`` cut, plus evidence.
+
+    ``hub`` reorders by hub-corrected score (``hubness.py``); each result's
+    evidence then records the penalty that was applied.
+    """
     outcome = _filter(catalog, attributes, filters)
     excluded = outcome.excluded if outcome else frozenset()
     results = search(catalog, query_vector, k=k, query_space=query_space,
-                     exclude=excluded, max_per_artist=max_per_artist)
+                     exclude=excluded, max_per_artist=max_per_artist,
+                     penalty=hub.offsets() if hub else None)
     explained = _with_evidence(
         results, match={"kind": "query", "query": query_text},
         candidates=len(catalog) - len(excluded), attributes=attributes, outcome=outcome,
-        terms=query_terms(query_text),
+        terms=query_terms(query_text), catalog=catalog, hub=hub,
     )
     return ExplainedResults(
         explained,
@@ -249,13 +260,15 @@ def explained_similar(
     filters: AttributeFilters = AttributeFilters(),
     k: int = 10,
     max_per_artist: int | None = None,
+    hub: HubAdjustment | None = None,
 ) -> ExplainedResults:
     """Similar songs with filters applied before the ``k`` cut, plus evidence."""
     catalog.position_of(track_id)  # unknown seed -> UnknownTrackError before filtering
     outcome = _filter(catalog, attributes, filters)
     excluded = (outcome.excluded if outcome else frozenset()) - {track_id}
     results = similar_to(catalog, track_id, k=k, exclude=excluded,
-                         max_per_artist=max_per_artist)
+                         max_per_artist=max_per_artist,
+                         penalty=hub.offsets() if hub else None)
     seed_title = str(catalog.metadata.get(track_id, {}).get("title", track_id))
     seed_attrs = None
     if attributes is not None:
@@ -266,6 +279,7 @@ def explained_similar(
         match={"kind": "seed", "seed_track_id": track_id, "seed_title": seed_title},
         candidates=len(catalog) - len(excluded) - 1,
         attributes=attributes, outcome=outcome, seed_attrs=seed_attrs,
+        catalog=catalog, hub=hub,
     )
     return ExplainedResults(
         explained,

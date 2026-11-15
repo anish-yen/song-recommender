@@ -25,6 +25,7 @@ Implementation plan and verified constraints: [PLAN.md](PLAN.md).
 | Vocals / genre / mood (AST model estimates), tempo / energy (measured) | implemented ([attributes](#attributes)); checked on the 11-track starter catalog only; mood is the weakest |
 | Vocals / genre / mood / energy / tempo filters | implemented ([filters](#filters-and-reasons)) |
 | A short evidence-based reason for every result | implemented ([reasons](#filters-and-reasons)); **ship only after** an agreement check against labelled tracks |
+| Hub correction (the same tracks for unrelated queries) | implemented ([hub correction](#hub-correction)); only active once `hubness.json` is built; weight **not yet tuned** on FMA |
 
 ## Running it
 
@@ -53,6 +54,11 @@ uv run python -m recommendation_engine.demo similar <track_id> -k 5 --verbose
 
 # 7. Check attributes against labelled tracks (format: data/labels.example.json)
 uv run python -m recommendation_engine.agreement --labels data/labels.json
+
+# 8. Hub penalties for the built index (writes .index/hubness.json; encodes the query bank once)
+uv run python -m recommendation_engine.hubness --index-dir .index
+#    ...then measure repeats and relevance cost at several weights
+uv run python -m recommendation_engine.hubness_eval --index-dir .index
 ```
 
 `--index-dir` relocates the index (default `.index/`), `--device auto` opts in to an
@@ -224,6 +230,30 @@ grammar, and it never filters or reranks.
 listed in `BuildReport.failed` and left out of the index. It is never stored with a placeholder
 vector, which would quietly pollute every future search.
 
+### Hub correction
+
+Plain cosine ranking returned one track in 7 of 12 mood top-5s on the 40-track sample.
+That is *hubness*: in a high-dimensional space a few vectors sit close to everything.
+MMR (`diversity.py`) cannot fix it, because it only spreads out the tracks within one list.
+`hubness.py` applies CSLS: each track gets a penalty `r(t)`, its mean cosine to its 10
+nearest reference queries, and ranking uses `cos(q, t) - weight * r(t)` (`weight = 0.5`
+ranks exactly like CSLS; `0` is off).
+
+- **Two reference sets.** Similar songs use the 10 nearest other catalog tracks (vectors
+  only). Mood search uses the 10 nearest searches in `query_bank.json`, encoded with the
+  catalog's CLAP text tower once at build time. The bank comes from the labelled searches on
+  the query-space-mapping branch, minus anything resembling `hubness_eval_queries.json`.
+- **Order only.** `similarity` stays the raw cosine; the ordering score is `rank_score`, MMR
+  uses it, and `evidence["hubness"]` records the penalty and weight.
+- **Bound to the build.** `hubness.json` stores a digest of the exact vectors. After any
+  rebuild it is refused and ranking falls back to plain cosine until it is rebuilt.
+- **Weight.** `HUB_WEIGHT` (env, API) or `Recommender(hub_weight=...)`. Tune with MMR on:
+  MMR rewards a demoted hub for sounding unlike the list and can pull it back in.
+  `hubness_eval.py` runs the full service path and reports the most-repeated tracks,
+  distinct tracks, list overlap, mean cosine, how deep into the raw ranking results reach,
+  and (similar songs) how often a result shares the seed's FMA genre.
+- **pgvector.** One stored float per track: `ORDER BY (embedding <=> :q) + :weight * penalty`.
+
 ## Limitations
 
 These are real and should be read before anyone demos this.
@@ -344,6 +374,9 @@ leaving them blank. Audio is git-ignored; ship the files out of band.
 | `attributes.py` | AST vocals/genre/mood tags, measured tempo/energy, `attributes.json` |
 | `filters.py` | attribute filters; unknown values hidden and counted apart |
 | `evidence.py` | evidence per result, query agreement, `short_reason` / `summarize` |
+| `diversity.py` | MMR rerank within one list |
+| `hubness.py` | hub penalties (CSLS), `hubness.json`, build CLI |
+| `hubness_eval.py` | repetition / relevance-cost report across hub weights |
 | `agreement.py` | compares attributes with labelled tracks |
 | `demo.py` | CLI |
 | `errors.py` | shared error hierarchy |
