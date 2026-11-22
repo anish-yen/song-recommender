@@ -26,7 +26,7 @@ from recommendation_engine.evidence import (
 )
 from recommendation_engine.filters import ENERGY_BANDS, TEMPO_LIMITS, AttributeFilters, apply_filters
 from recommendation_engine.index import load_index
-from recommendation_engine.similarity import Catalog, cosine_scores, rank_by_score
+from recommendation_engine.similarity import Catalog, cosine_scores, rank_by_score, similar_to
 
 #: Upper bound on results per request; the design target is 10.
 MAX_K = 50
@@ -66,17 +66,32 @@ def _zscore(values: np.ndarray) -> np.ndarray:
 class Recommender:
     """One catalog plus one encoder, shared by every request in the process."""
 
-    def __init__(self, catalog: Catalog, attributes, encoder) -> None:
+    def __init__(self, catalog: Catalog, attributes, encoder, *,
+                 neighbours=similar_to, vector_backend: str = "numpy") -> None:
         self.catalog = catalog
         self.attributes = attributes
         self.encoder = encoder
+        #: Seed-song retrieval: exact NumPy cosine, or ``PgVectorStore.similar_to``.
+        self.neighbours = neighbours
+        self.vector_backend = vector_backend
         # Torch modules are not documented as safe for concurrent forward passes;
         # text encoding is ~15 ms, so serialising it costs little.
         self._encode_lock = threading.Lock()
 
     @classmethod
-    def from_index(cls, index_dir, *, device: str = "cpu") -> "Recommender":
+    def from_index(cls, index_dir, *, device: str = "cpu", vector_backend: str = "numpy",
+                   pgvector_url: str | None = None) -> "Recommender":
         catalog = load_index(index_dir)
+        neighbours = similar_to
+        if vector_backend == "pgvector":
+            from recommendation_engine.pgvector_store import PgVectorStore
+
+            store = PgVectorStore.from_url(pgvector_url or "", catalog.space)
+            store.verify_matches(catalog)  # refuse to serve a stale copy of the index
+            neighbours = store.similar_to
+        elif vector_backend != "numpy":
+            raise RecommenderError(
+                f"VECTOR_BACKEND must be 'numpy' or 'pgvector', got {vector_backend!r}")
         try:
             attributes = load_attributes(index_dir, catalog)
         except IndexCorruptError:
@@ -85,7 +100,8 @@ class Recommender:
             attributes = None
         from recommendation_engine.embeddings import ClapEncoder
 
-        recommender = cls(catalog, attributes, ClapEncoder(space=catalog.space, device=device))
+        recommender = cls(catalog, attributes, ClapEncoder(space=catalog.space, device=device),
+                          neighbours=neighbours, vector_backend=vector_backend)
         # The first forward pass pays one-off setup (~1.4 s measured on CPU); pay it
         # at startup so the first user's search meets the latency target.
         recommender.encode("warm-up")
@@ -182,7 +198,8 @@ class Recommender:
             return self._blend(query, seed_id, filters, k, max_per_artist)
         if seed_id:
             out = explained_similar(self.catalog, seed_id, attributes=self.attributes,
-                                    filters=filters, k=k, max_per_artist=max_per_artist)
+                                    filters=filters, k=k, max_per_artist=max_per_artist,
+                                    neighbours=self.neighbours)
             path = "seed"
         else:
             out = explained_search(self.catalog, self.encode(query), query_text=query,
