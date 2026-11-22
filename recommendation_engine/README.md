@@ -21,7 +21,7 @@ Implementation plan and verified constraints: [PLAN.md](PLAN.md).
 | Exact cosine retrieval + ranking rules | covered by the default test suite |
 | Index persistence with content-hash cache invalidation | implemented; atomic generations and stored-vector validation (R1, R2, R4 in [REVIEW.md](../REVIEW.md)) fixed |
 | FastAPI endpoints | implemented ([../api/README.md](../api/README.md)) |
-| PostgreSQL/pgvector | **not started** — next step, checked against this module's NumPy results |
+| PostgreSQL/pgvector | similar-song path implemented ([pgvector](#similar-songs-on-pgvector)); agrees with NumPy on a Postgres stand-in, **not yet run against real pgvector** |
 | Vocals / genre / mood (AST model estimates), tempo / energy (measured) | implemented ([attributes](#attributes)); checked on the 11-track starter catalog only; mood is the weakest |
 | Vocals / genre / mood / energy / tempo filters | implemented ([filters](#filters-and-reasons)) |
 | A short evidence-based reason for every result | implemented ([reasons](#filters-and-reasons)); **ship only after** an agreement check against labelled tracks |
@@ -330,6 +330,49 @@ ogg, mp3) — no ffmpeg needed. **Tracks shorter than 30 seconds yield fewer tha
 and audio must be permitted for our use: please fill in `source` and `license` rather than
 leaving them blank. Audio is git-ignored; ship the files out of band.
 
+## Similar songs on pgvector
+
+`pgvector_store.py` moves the seed-song path ("find songs similar to this one") into
+PostgreSQL + pgvector, as the design doc's P0 asks. NumPy `similarity.similar_to` stays the
+reference, and the pgvector version takes the same arguments and must return the same list.
+
+```bash
+export PGVECTOR_URL="postgresql://user:pass@host:5432/postgres"   # needs the vector extension
+uv run python -m recommendation_engine.pgvector_store load   --index-dir .index   # create + upsert
+uv run python -m recommendation_engine.pgvector_store check  --index-dir .index   # agreement + latency
+uv run python -m recommendation_engine.pgvector_store similar <track_id> -k 5
+VECTOR_BACKEND=pgvector uv run uvicorn api.app:app --port 8000                  # API uses it
+```
+
+| Decision | Choice | Why |
+| --- | --- | --- |
+| Table | `recommender.track_embeddings` (the design doc's columns + `space_fingerprint`) | its own schema, so Prisma (which owns `public`) never reports drift |
+| Key | `(space_fingerprint, track_id)` | vectors from two models can never be compared |
+| Search | exact: `ORDER BY embedding <=> seed, track_id` | same ties as NumPy; HNSW is approximate, so it waits until `check` shows exact is too slow |
+| Artist cap | applied in Python over pages that grow ×4 until `k` survive | identical to `rank_by_score`; SQL window functions would scan everything anyway |
+| Metadata | titles/artists still come from the loaded index | the DB copy of the catalog is a later step; startup refuses a DB whose track set differs |
+| Connection | one psycopg connection, lock-guarded, reconnects once; `prepare_threshold=None` | routes run in threads; Supabase's pooler cannot keep prepared statements |
+
+`check` compares every seed (or `--seeds N`) with and without the product's artist cap and
+reports `same` / `near-tie` / `different` plus median and p95 latency. `near-tie` means two
+tracks with scores within 1e-5 swapped: pgvector accumulates in float32 and NumPy in float64.
+Exit status 1 on any `different`.
+
+Mood search and the query+seed blend still use NumPy (the blend needs every track's score
+to z-score). Porting mood search is a small follow-up: the same neighbour query with a
+text vector in place of the seed's.
+
+**Seed-song tests.** `seed_eval.py` runs the design doc's 20 seed tests as a grading sheet:
+
+```bash
+uv run python -m recommendation_engine.seed_eval --pick 20 -k 5 --out seed_grades.csv
+# or seeds written down before looking at results: --seeds data/seeds.json  (["fma-000002", ...])
+```
+
+Each row is one result with an empty `grade` column (good / acceptable / wrong, as in
+[EVALUATION.md](EVALUATION.md)). It also prints how often a result shares the seed's FMA
+genre next to the chance rate, a sanity check rather than a quality grade.
+
 ## Layout
 
 | File | Responsibility |
@@ -345,6 +388,8 @@ leaving them blank. Audio is git-ignored; ship the files out of band.
 | `filters.py` | attribute filters; unknown values hidden and counted apart |
 | `evidence.py` | evidence per result, query agreement, `short_reason` / `summarize` |
 | `agreement.py` | compares attributes with labelled tracks |
+| `pgvector_store.py` | similar songs over Postgres + pgvector; `load` / `check` / `similar` CLI |
+| `seed_eval.py` | the 20 seed-song tests as a CSV grading sheet |
 | `demo.py` | CLI |
 | `errors.py` | shared error hierarchy |
 
