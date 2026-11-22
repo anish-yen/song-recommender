@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Callable
 
 import numpy as np
 
@@ -249,12 +250,17 @@ def explained_similar(
     filters: AttributeFilters = AttributeFilters(),
     k: int = 10,
     max_per_artist: int | None = None,
+    neighbours: Callable[..., list[Recommendation]] = similar_to,
 ) -> ExplainedResults:
-    """Similar songs with filters applied before the ``k`` cut, plus evidence."""
+    """Similar songs with filters applied before the ``k`` cut, plus evidence.
+
+    ``neighbours`` does the retrieval: exact NumPy ``similar_to`` by default, or
+    ``PgVectorStore.similar_to``, which takes the same arguments and must agree.
+    """
     catalog.position_of(track_id)  # unknown seed -> UnknownTrackError before filtering
     outcome = _filter(catalog, attributes, filters)
     excluded = (outcome.excluded if outcome else frozenset()) - {track_id}
-    results = similar_to(catalog, track_id, k=k, exclude=excluded,
+    results = neighbours(catalog, track_id, k=k, exclude=excluded,
                          max_per_artist=max_per_artist)
     seed_title = str(catalog.metadata.get(track_id, {}).get("title", track_id))
     seed_attrs = None
