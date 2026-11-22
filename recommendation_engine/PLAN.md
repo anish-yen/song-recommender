@@ -118,7 +118,7 @@ attributes, filters, reasons) and `frontend`. Measured on a 40-track FMA sample 
 | Mood search in natural language | done | `POST /recommendations`, `POST /search`; ~15 ms per query after a 3 s model load |
 | Similar songs from a seed | done | `GET /similar/{id}`, seed typeahead in the UI; seed excluded |
 | CLAP embeddings | done | `laion/larger_clap_general@ada0c23` (the music checkpoint collapses text, R7) |
-| pgvector similarity search | **pending** | NumPy exact cosine is the reference; pgvector must match it exactly |
+| pgvector similarity search | **seed path implemented** | `pgvector_store.py`, `VECTOR_BACKEND=pgvector`; exact search agreed with NumPy on 360/360 rankings against a Postgres stand-in — run `pgvector_store check` on the real database before calling it done. Mood search still NumPy |
 | Filters: energy, tempo, vocals, mood, genre | done | AST estimates + measured tempo/energy; applied before the top-k cut |
 | Short evidence-based reason per result | done | `why` built only from the match, applied filters and labelled estimates |
 | Artist cap / diversity | partial | cap of 2 per artist on `/recommendations`; no diversity score yet — one track ("Machines and Muscles") appears in 7 of 12 mood top-5s on the sample |
