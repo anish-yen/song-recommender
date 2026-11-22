@@ -5,6 +5,8 @@
 Environment:
     INDEX_DIR        index built by ``recommendation_engine.demo build-index`` (default .index)
     DEVICE           cpu (default), mps, cuda, or auto — for query text encoding
+    VECTOR_BACKEND   numpy (default) or pgvector — where similar-song retrieval runs
+    PGVECTOR_URL     Postgres URL holding the vectors, when VECTOR_BACKEND=pgvector
     PUBLIC_API_URL   base URL for preview links (default: the URL the request arrived on)
 
 The model is loaded once at startup, and every route is a plain ``def``: FastAPI
@@ -106,6 +108,8 @@ def create_app(recommender: Recommender | None = None) -> FastAPI:
                 app.state.recommender = Recommender.from_index(
                     os.environ.get("INDEX_DIR", ".index"),
                     device=os.environ.get("DEVICE", "cpu"),
+                    vector_backend=os.environ.get("VECTOR_BACKEND", "numpy"),
+                    pgvector_url=os.environ.get("PGVECTOR_URL"),
                 )
             except RecommenderError as exc:
                 # Stay up and answer 503 with the reason, rather than crash-looping.
@@ -167,6 +171,7 @@ def create_app(recommender: Recommender | None = None) -> FastAPI:
             "tracks": len(rec.catalog),
             "embeddingSpace": rec.catalog.space.describe(),
             "attributes": rec.attributes is not None,
+            "vectorBackend": rec.vector_backend,
         }
 
     @app.get("/filters")
