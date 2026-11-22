@@ -19,6 +19,9 @@ dependencies = [
     "librosa>=1.0",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    # Postgres driver for the pgvector similar-song backend (pgvector_store.py);
+    # imported only when VECTOR_BACKEND=pgvector or the pgvector CLI runs.
+    "psycopg[binary]>=3.2",
 ]
 
 [dependency-groups]
