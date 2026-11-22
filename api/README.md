@@ -1,7 +1,7 @@
 # API
 
 FastAPI service over the recommendation engine. Responsibility: API and database
-integration. Status: **implemented over the local NumPy index**; PostgreSQL/pgvector is the
+integration. Status: **implemented over the local NumPy index**; similar songs can also run on pgvector (below). Full PostgreSQL/pgvector is the
 next step (it must return identical rankings — `similarity.py` is the reference).
 
 ```bash
@@ -13,6 +13,8 @@ uv run uvicorn api.app:app --port 8000      # interactive docs at http://localho
 | `INDEX_DIR` | `.index` | index from `demo build-index` (+ `attributes.json` for filters and reasons) |
 | `DEVICE` | `cpu` | device for query text encoding (`mps`, `cuda`, `auto`) |
 | `PUBLIC_API_URL` | request URL | base for `previewUrl` links, when the API sits behind a proxy |
+| `VECTOR_BACKEND` | `numpy` | `pgvector` runs similar-song retrieval in Postgres (seed-only requests) |
+| `PGVECTOR_URL` | — | Postgres URL holding the vectors; load them first with `pgvector_store load` |
 
 The model loads **once** at startup and encodes one warm-up query, so the first real
 search is as fast as the rest. Routes are plain `def` (FastAPI runs them in a worker
@@ -84,9 +86,13 @@ is the full structure behind it, for a debug view.
 Tests: `tests/test_api.py` (contract, blend ordering, filters, artist cap, previews, errors),
 run with the default `uv run pytest` — no model weights needed.
 
-## Next: PostgreSQL + pgvector
+## PostgreSQL + pgvector
 
-Carry the embedding-space fingerprint on every vector row so two spaces can never mix.
-`<=>` is cosine **distance**: similarity is `1 - distance`. Start with exact search, compare
-every ranking (ties broken by `track_id`, filters before the cut, artist cap) against the
-NumPy reference, and add an HNSW index only once measurements justify the recall trade-off.
+With `VECTOR_BACKEND=pgvector`, seed-only requests (`GET /similar/{id}` and
+`/recommendations` with just a seed) retrieve neighbours from pgvector; filters, the artist cap
+and reasons work exactly as before. At startup the service checks that the database holds the
+same tracks as the index for the same embedding space, and answers `503` with the reason if not.
+`/health` reports `vectorBackend`. Mood search and blends still run in NumPy. Details and the
+agreement check: [recommendation_engine/README.md → Similar songs on pgvector](../recommendation_engine/README.md#similar-songs-on-pgvector).
+`PGVECTOR_URL` is separate from Prisma's `DATABASE_URL` because Prisma's URL carries
+`?pgbouncer=true`, which psycopg rejects; on Supabase use the session (5432) URL.
