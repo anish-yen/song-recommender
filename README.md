@@ -27,7 +27,7 @@ browser ──▶ Next.js (src/, :3001) ──/api/recommendations──▶ Fast
 | --- | --- | --- |
 | **Ingestion** — FMA dataset → manifest | [ingestion/README.md](ingestion/README.md) | working |
 | **Recommendation engine** — CLAP embeddings, mood search, similar songs, filters, reasons | [recommendation_engine/README.md](recommendation_engine/README.md) | working; listening evaluation pending |
-| **API** — `POST /recommendations`, `/search`, `/similar/{id}`, `/tracks`, `/filters`, `/audio/{id}` | [api/README.md](api/README.md) | working over the local index; pgvector next |
+| **API** — `POST /recommendations`, `/search`, `/similar/{id}`, `/tracks`, `/filters`, `/audio/{id}` | [api/README.md](api/README.md) | working over the local index; similar songs optionally on pgvector |
 | **Frontend** — Next.js discovery, auth, feedback, playlists | [src/README.md](src/README.md) | discovery wired to the API; auth/feedback/playlists need a database |
 
 ## Run it locally
